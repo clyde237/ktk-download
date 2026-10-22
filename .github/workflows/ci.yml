@@ -58,7 +58,9 @@ jobs:
             libxdo-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            librsvg2-dev
+            librsvg2-dev \
+            python3-pip
+          pip install --break-system-packages yt-dlp
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable

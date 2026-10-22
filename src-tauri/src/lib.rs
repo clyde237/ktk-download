@@ -1,6 +1,7 @@
 pub mod commands;
 pub mod downloader;
 pub mod error;
+pub mod extractor;
 pub mod models;
 
 use commands::{download_video, inspect_url};

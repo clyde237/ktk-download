@@ -4,15 +4,15 @@ use uuid::Uuid;
 
 use crate::downloader;
 use crate::error::CommandError;
+use crate::extractor;
 use crate::models::{
-    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, VideoFormat,
-    VideoMetadata,
+    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, VideoMetadata,
 };
 
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
 ///
-/// Cette commande effectue une validation préliminaire de l'URL et détecte la plateforme
-/// (YouTube, MoviBox ou flux direct) avant d'extraire les formats disponibles.
+/// Cette commande utilise le moteur d'extraction `yt-dlp` (avec fallback HTML/HLS pour MoviBox
+/// et flux directs) pour résoudre dynamiquement le titre, l'auteur, la vignette et les résolutions.
 #[tauri::command]
 pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
     let trimmed_url = url.trim();
@@ -22,79 +22,14 @@ pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
         ));
     }
 
-    // Validation syntaxique de l'URL
-    let parsed_url = Url::parse(trimmed_url)
-        .map_err(|e| CommandError::InvalidUrl(format!("Format d'adresse invalide : {}", e)))?;
-
-    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
-        return Err(CommandError::InvalidUrl(
-            "Seuls les protocoles HTTP et HTTPS sont pris en charge.".to_string(),
-        ));
-    }
-
-    let host = parsed_url.host_str().unwrap_or("").to_lowercase();
-
-    // Détection de la plateforme source
-    let (platform_name, estimated_title) =
-        if host.contains("youtube.com") || host.contains("youtu.be") {
-            ("YouTube".to_string(), "Vidéo YouTube".to_string())
-        } else if host.contains("movibox.net") || host.contains("movibox") {
-            ("MoviBox".to_string(), "Contenu MoviBox".to_string())
-        } else {
-            ("Flux Web / Direct".to_string(), "Vidéo Web".to_string())
-        };
-
-    // Formats types préconfigurés pour la structure initiale
-    let formats = vec![
-        VideoFormat {
-            format_id: "best".to_string(),
-            label: "Meilleure qualité disponible (Auto)".to_string(),
-            resolution: Some("1080p".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "720p".to_string(),
-            label: "720p HD".to_string(),
-            resolution: Some("1280x720".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "audio_only".to_string(),
-            label: "Audio uniquement (MP3)".to_string(),
-            resolution: None,
-            extension: "mp3".to_string(),
-            file_size_bytes: None,
-            has_video: false,
-            has_audio: true,
-            direct_url: None,
-        },
-    ];
-
-    Ok(VideoMetadata {
-        id: Uuid::new_v4().to_string(),
-        title: estimated_title,
-        description: Some(format!("Flux analysé depuis {}", host)),
-        author: None,
-        thumbnail_url: None,
-        duration_seconds: None,
-        source_platform: platform_name,
-        source_url: trimmed_url.to_string(),
-        available_formats: formats,
-    })
+    // Extraction des métadonnées via yt-dlp ou fallback MoviBox / Web
+    extractor::extract_metadata(trimmed_url).await
 }
 
 /// Commande IPC : Initialise et orchestre le téléchargement d'une vidéo avec suivi de progression.
 ///
-/// Cette commande émet des événements `download-progress` via l'AppHandle Tauri pour informer
-/// l'interface en temps réel de l'avancement.
+/// Si `yt-dlp` est présent, la commande l'utilise pour gérer les multiplexages audio/vidéo complexes,
+/// et bascule automatiquement sur le moteur de streaming asynchrone natif Rust en cas de besoin.
 #[tauri::command]
 pub async fn download_video(
     app: AppHandle,
@@ -141,10 +76,31 @@ pub async fn download_video(
         extension,
     );
 
-    // Téléchargement via streaming asynchrone
-    let total_bytes =
-        downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await?;
+    // Tentative de téléchargement avec yt-dlp si disponible
+    let download_result = if extractor::find_ytdlp_binary().is_some() {
+        match extractor::download_with_ytdlp(
+            &app,
+            &download_id,
+            trimmed_url,
+            Some(format),
+            &target_path,
+        )
+        .await
+        {
+            Ok(bytes) => Ok(bytes),
+            Err(e) => {
+                log::warn!(
+                    "Échec yt-dlp ({:?}), tentative avec le moteur de streaming direct...",
+                    e
+                );
+                downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await
+            }
+        }
+    } else {
+        downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await
+    };
 
+    let total_bytes = download_result?;
     let file_path_str = target_path.to_string_lossy().to_string();
     let title = target_path
         .file_stem()

@@ -26,9 +26,11 @@ thiserror = "2"
 url = "2.5"
 uuid = { version = "1", features = ["v4", "serde"] }
 reqwest = { version = "0.13", features = ["stream"] }
-tokio = { version = "1", features = ["fs", "io-util", "sync", "time", "macros"] }
+tokio = { version = "1", features = ["fs", "io-util", "sync", "time", "macros", "process"] }
 futures-util = "0.3"
 dirs = "7"
+regex = "1.10"
+log = "0.4"
 
 
 # Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
