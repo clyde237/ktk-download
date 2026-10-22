@@ -2,6 +2,7 @@ use tauri::{AppHandle, Emitter};
 use url::Url;
 use uuid::Uuid;
 
+use crate::downloader;
 use crate::error::CommandError;
 use crate::models::{
     DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, VideoFormat,
@@ -106,8 +107,18 @@ pub async fn download_video(
         ));
     }
 
+    let parsed_url = Url::parse(trimmed_url)
+        .map_err(|e| CommandError::InvalidUrl(format!("Format d'adresse invalide : {}", e)))?;
+
+    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
+        return Err(CommandError::InvalidUrl(
+            "Seuls les protocoles HTTP et HTTPS sont pris en charge.".to_string(),
+        ));
+    }
+
     let download_id = Uuid::new_v4().to_string();
     let format = request.format_id.as_deref().unwrap_or("best");
+    let extension = if format == "audio_only" { "mp3" } else { "mp4" };
 
     // Notification initiale d'entrée en file d'attente
     let initial_payload = DownloadProgressPayload {
@@ -120,40 +131,31 @@ pub async fn download_video(
         eta_seconds: None,
     };
 
-    app.emit("download-progress", &initial_payload)
-        .map_err(|e| {
-            CommandError::Internal(format!("Échec de transmission de l'événement : {}", e))
-        })?;
+    let _ = app.emit("download-progress", &initial_payload);
 
-    // Résolution du répertoire de destination
-    let destination_dir = request
-        .output_dir
-        .unwrap_or_else(|| "Downloads".to_string());
+    // Résolution du chemin de sortie sécurisé
+    let target_path = downloader::resolve_output_path(
+        request.output_dir.as_deref(),
+        request.custom_filename.as_deref(),
+        &download_id[..8],
+        extension,
+    );
 
-    let final_filename = request
-        .custom_filename
-        .unwrap_or_else(|| format!("video_{}.mp4", &download_id[..8]));
+    // Téléchargement via streaming asynchrone
+    let total_bytes =
+        downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await?;
 
-    let target_path = format!("{}/{}", destination_dir, final_filename);
-
-    // Émission d'un état de complétion (structure prête pour le moteur de téléchargement réel)
-    let completed_payload = DownloadProgressPayload {
-        download_id: download_id.clone(),
-        status: DownloadStatus::Completed,
-        progress_percentage: 100.0,
-        downloaded_bytes: 1024 * 1024 * 15,
-        total_bytes: Some(1024 * 1024 * 15),
-        speed_bytes_per_sec: 1024 * 1024 * 2,
-        eta_seconds: Some(0),
-    };
-
-    let _ = app.emit("download-progress", &completed_payload);
+    let file_path_str = target_path.to_string_lossy().to_string();
+    let title = target_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("Vidéo ({})", format));
 
     Ok(DownloadResult {
         download_id,
-        file_path: target_path,
-        file_size_bytes: 1024 * 1024 * 15,
-        title: format!("Vidéo ({})", format),
+        file_path: file_path_str,
+        file_size_bytes: total_bytes,
+        title,
     })
 }
 

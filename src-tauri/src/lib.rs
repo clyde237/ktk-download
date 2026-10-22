@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod downloader;
 pub mod error;
 pub mod models;
 

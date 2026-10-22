@@ -13,7 +13,7 @@
 
 ## Phase 2 : Backend & Moteur de Téléchargement
 
-- [ ] Implémenter la commande IPC download_video en Rust avec support streaming asynchrone et émission d'événements de progression via l'API Tauri IPC
+- [x] Implémenter la commande IPC download_video en Rust avec support streaming asynchrone et émission d'événements de progression via l'API Tauri IPC
 - [ ] Intégrer yt-dlp (ou des extracteurs bundlés) comme moteur d'extraction vidéo sous-jacent avec support YouTube et MoviBox
 - [ ] Développer la logique de validation et d'assainissement des URLs avec vérification stricte du protocole et des domaines autorisés
 - [ ] Créer le pipeline de streaming asynchrone vers le disque avec écriture non bloquante et émission périodique du pourcentage de progression, de la vitesse et du temps restant
