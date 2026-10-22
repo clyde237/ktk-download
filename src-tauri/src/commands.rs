@@ -1,7 +1,7 @@
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use crate::downloader;
+use crate::downloader::{self, DownloadRegistry};
 use crate::error::CommandError;
 use crate::extractor;
 use crate::models::{
@@ -25,6 +25,15 @@ pub fn validate_url(url: String) -> Result<ValidatedUrlPayload, CommandError> {
     })
 }
 
+/// Commande IPC : Interrompt et annule un téléchargement en cours via son identifiant.
+#[tauri::command]
+pub fn cancel_download(
+    registry: State<'_, DownloadRegistry>,
+    download_id: String,
+) -> Result<bool, CommandError> {
+    Ok(registry.cancel(&download_id))
+}
+
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
 ///
 /// Cette commande valide et assainit d'abord l'URL, puis utilise le moteur d'extraction `yt-dlp`
@@ -42,11 +51,14 @@ pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
 #[tauri::command]
 pub async fn download_video(
     app: AppHandle,
+    registry: State<'_, DownloadRegistry>,
     request: DownloadRequest,
 ) -> Result<DownloadResult, CommandError> {
     let validated = validator::validate_and_sanitize_url(&request.url)?;
 
     let download_id = Uuid::new_v4().to_string();
+    let cancel_token = registry.register(&download_id);
+
     let format = request.format_id.as_deref().unwrap_or("best");
     let extension = if format == "audio_only" { "mp3" } else { "mp4" };
 
@@ -93,14 +105,23 @@ pub async fn download_video(
                     &download_id,
                     &validated.canonical_url,
                     &target_path,
+                    Some(cancel_token),
                 )
                 .await
             }
         }
     } else {
-        downloader::download_stream(&app, &download_id, &validated.canonical_url, &target_path)
-            .await
+        downloader::download_stream(
+            &app,
+            &download_id,
+            &validated.canonical_url,
+            &target_path,
+            Some(cancel_token),
+        )
+        .await
     };
+
+    registry.unregister(&download_id);
 
     let total_bytes = download_result?;
     let file_path_str = target_path.to_string_lossy().to_string();

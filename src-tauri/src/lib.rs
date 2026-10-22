@@ -5,7 +5,7 @@ pub mod extractor;
 pub mod models;
 pub mod validator;
 
-use commands::{download_video, inspect_url, validate_url};
+use commands::{cancel_download, download_video, inspect_url, validate_url};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -17,11 +17,13 @@ fn greet(name: &str) -> String {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .manage(downloader::DownloadRegistry::default())
         .invoke_handler(tauri::generate_handler![
             greet,
             inspect_url,
             download_video,
-            validate_url
+            validate_url,
+            cancel_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
