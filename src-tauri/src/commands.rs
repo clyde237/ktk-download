@@ -1,55 +1,50 @@
 use tauri::{AppHandle, Emitter};
-use url::Url;
 use uuid::Uuid;
 
 use crate::downloader;
 use crate::error::CommandError;
 use crate::extractor;
 use crate::models::{
-    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, VideoMetadata,
+    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, ValidatedUrlPayload,
+    VideoMetadata,
 };
+use crate::validator;
+
+/// Commande IPC : Valide et assainit instantanément une URL sans bloquer l'interface.
+///
+/// Permet au frontend de vérifier en temps réel la validité du format et d'identifier la plateforme
+/// (YouTube, MoviBox, etc.) dès la frappe ou le collage.
+#[tauri::command]
+pub fn validate_url(url: String) -> Result<ValidatedUrlPayload, CommandError> {
+    let validated = validator::validate_and_sanitize_url(&url)?;
+    Ok(ValidatedUrlPayload {
+        is_valid: true,
+        canonical_url: validated.canonical_url,
+        domain: validated.domain,
+        platform: validated.platform.as_str().to_string(),
+    })
+}
 
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
 ///
-/// Cette commande utilise le moteur d'extraction `yt-dlp` (avec fallback HTML/HLS pour MoviBox
-/// et flux directs) pour résoudre dynamiquement le titre, l'auteur, la vignette et les résolutions.
+/// Cette commande valide et assainit d'abord l'URL, puis utilise le moteur d'extraction `yt-dlp`
+/// (avec fallback HTML/HLS pour MoviBox et flux directs) pour résoudre dynamiquement les informations vidéo.
 #[tauri::command]
 pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
-    let trimmed_url = url.trim();
-    if trimmed_url.is_empty() {
-        return Err(CommandError::InvalidUrl(
-            "L'adresse URL ne peut pas être vide.".to_string(),
-        ));
-    }
-
-    // Extraction des métadonnées via yt-dlp ou fallback MoviBox / Web
-    extractor::extract_metadata(trimmed_url).await
+    let validated = validator::validate_and_sanitize_url(&url)?;
+    extractor::extract_metadata(&validated.canonical_url).await
 }
 
 /// Commande IPC : Initialise et orchestre le téléchargement d'une vidéo avec suivi de progression.
 ///
-/// Si `yt-dlp` est présent, la commande l'utilise pour gérer les multiplexages audio/vidéo complexes,
-/// et bascule automatiquement sur le moteur de streaming asynchrone natif Rust en cas de besoin.
+/// Valide rigoureusement l'URL avant de lancer le téléchargement avec `yt-dlp` ou le moteur
+/// de streaming asynchrone natif.
 #[tauri::command]
 pub async fn download_video(
     app: AppHandle,
     request: DownloadRequest,
 ) -> Result<DownloadResult, CommandError> {
-    let trimmed_url = request.url.trim();
-    if trimmed_url.is_empty() {
-        return Err(CommandError::InvalidUrl(
-            "L'adresse URL à télécharger est requise.".to_string(),
-        ));
-    }
-
-    let parsed_url = Url::parse(trimmed_url)
-        .map_err(|e| CommandError::InvalidUrl(format!("Format d'adresse invalide : {}", e)))?;
-
-    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
-        return Err(CommandError::InvalidUrl(
-            "Seuls les protocoles HTTP et HTTPS sont pris en charge.".to_string(),
-        ));
-    }
+    let validated = validator::validate_and_sanitize_url(&request.url)?;
 
     let download_id = Uuid::new_v4().to_string();
     let format = request.format_id.as_deref().unwrap_or("best");
@@ -81,7 +76,7 @@ pub async fn download_video(
         match extractor::download_with_ytdlp(
             &app,
             &download_id,
-            trimmed_url,
+            &validated.canonical_url,
             Some(format),
             &target_path,
         )
@@ -93,11 +88,18 @@ pub async fn download_video(
                     "Échec yt-dlp ({:?}), tentative avec le moteur de streaming direct...",
                     e
                 );
-                downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await
+                downloader::download_stream(
+                    &app,
+                    &download_id,
+                    &validated.canonical_url,
+                    &target_path,
+                )
+                .await
             }
         }
     } else {
-        downloader::download_stream(&app, &download_id, trimmed_url, &target_path).await
+        downloader::download_stream(&app, &download_id, &validated.canonical_url, &target_path)
+            .await
     };
 
     let total_bytes = download_result?;

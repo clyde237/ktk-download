@@ -100,3 +100,16 @@ pub struct DownloadResult {
     /// Titre de la vidéo enregistrée
     pub title: String,
 }
+
+/// Résultat retourné par la validation instantanée d'une URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatedUrlPayload {
+    /// Indique si l'URL est conforme et autorisée
+    pub is_valid: bool,
+    /// URL nettoyée et canonique
+    pub canonical_url: String,
+    /// Domaine ou nom d'hôte extrait
+    pub domain: String,
+    /// Nom lisible de la plateforme détectée
+    pub platform: String,
+}

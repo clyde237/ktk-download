@@ -84,3 +84,13 @@ export interface DownloadResult {
   file_size_bytes: number;
   title: string;
 }
+
+/**
+ * Résultat de la validation et assainissement d'une URL via `validate_url`.
+ */
+export interface ValidatedUrlPayload {
+  is_valid: boolean;
+  canonical_url: string;
+  domain: string;
+  platform: string;
+}
