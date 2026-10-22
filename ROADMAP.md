@@ -17,7 +17,7 @@
 - [x] Intégrer yt-dlp (ou des extracteurs bundlés) comme moteur d'extraction vidéo sous-jacent avec support YouTube et MoviBox
 - [x] Développer la logique de validation et d'assainissement des URLs avec vérification stricte du protocole et des domaines autorisés
 - [x] Créer le pipeline de streaming asynchrone vers le disque avec écriture non bloquante et émission périodique du pourcentage de progression, de la vitesse et du temps restant
-- [ ] Ajouter une gestion d'erreurs robuste : timeouts réseau, URLs invalides, sites non supportés, et sérialisation d'erreurs utilisateur-friendly
+- [x] Ajouter une gestion d'erreurs robuste : timeouts réseau, URLs invalides, sites non supportés, et sérialisation d'erreurs utilisateur-friendly
 
 ## Phase 3 : Interface Utilisateur & Expérience Utilisateur
 

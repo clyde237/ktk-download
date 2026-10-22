@@ -159,16 +159,13 @@ pub async fn download_stream<R: Runtime>(
     // 5. Requête HTTP avec flux asynchrone
     let response = client.get(source_url).send().await.map_err(|e| {
         emit_failure(app, download_id, 0, None);
-        CommandError::NetworkError(format!("Erreur lors de la requête HTTP : {}", e))
+        CommandError::from(e)
     })?;
 
     let status = response.status();
     if !status.is_success() {
         emit_failure(app, download_id, 0, None);
-        return Err(CommandError::DownloadFailed(format!(
-            "Le serveur a renvoyé un statut HTTP {}",
-            status
-        )));
+        return Err(CommandError::from_http_status(status));
     }
 
     let total_bytes = response.content_length();
@@ -221,10 +218,7 @@ pub async fn download_stream<R: Runtime>(
                 drop(writer);
                 let _ = tokio::fs::remove_file(&part_file_path).await;
                 emit_failure(app, download_id, downloaded_bytes, total_bytes);
-                return Err(CommandError::NetworkError(format!(
-                    "Interruption de flux réseau : {}",
-                    e
-                )));
+                return Err(CommandError::from(e));
             }
         };
 

@@ -156,10 +156,7 @@ async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(CommandError::ExtractionFailed(format!(
-            "yt-dlp a échoué : {}",
-            stderr.trim()
-        )));
+        return Err(CommandError::from_ytdlp_stderr(&stderr));
     }
 
     let json_str = String::from_utf8_lossy(&output.stdout);

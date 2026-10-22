@@ -5,7 +5,9 @@
 export type CommandErrorKind =
   | 'InvalidUrl'
   | 'UnsupportedPlatform'
+  | 'NetworkTimeout'
   | 'NetworkError'
+  | 'VideoNotFound'
   | 'ExtractionFailed'
   | 'FileSystemError'
   | 'DownloadFailed'
