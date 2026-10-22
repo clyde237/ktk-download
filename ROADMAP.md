@@ -21,7 +21,7 @@
 
 ## Phase 3 : Interface Utilisateur & Expérience Utilisateur
 
-- [ ] Créer le composant Svelte 5 d'entrée d'URL avec validation en temps réel, détection de service et support copier-coller
+- [x] Créer le composant Svelte 5 d'entrée d'URL avec validation en temps réel, détection de service et support copier-coller
 - [ ] Implémenter la barre de progression réactive liée au store `$state` Svelte 5, mise à jour asynchrone via les événements IPC Tauri
 - [ ] Concevoir et intégrer le thème clair moderne avec échelle typographique, palette de couleurs et mise en page réactive (Tailwind CSS ou CSS modules)
 - [ ] Développer le sélecteur de dossier de destination avec API file picker native et accès rapide aux dossiers récemment utilisés
