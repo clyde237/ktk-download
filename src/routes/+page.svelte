@@ -1,10 +1,78 @@
 <script lang="ts">
+  import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
+  import { downloads, isTerminalStatus } from '$lib/stores/downloads.svelte';
   import type { CommandError, VideoMetadata } from '$lib/types/download';
-  import { formatDuration } from '$lib/utils/format';
+  import { formatDuration, formatErrorMessage } from '$lib/utils/format';
 
   let inspectedVideo = $state<VideoMetadata | null>(null);
   let currentError = $state<CommandError | null>(null);
+
+  // Un seul téléchargement à la fois tant que la file d'attente (phase 4) n'existe pas.
+  let activeDownloadId = $state<string | null>(null);
+  let isStartingDownload = $state(false);
+  let downloadStartError = $state<string | null>(null);
+
+  let activeDownload = $derived(
+    activeDownloadId ? (downloads.entries[activeDownloadId] ?? null) : null
+  );
+  let isDownloading = $derived(
+    isStartingDownload || (activeDownload !== null && !isTerminalStatus(activeDownload.status))
+  );
+
+  async function handleDownload() {
+    if (!inspectedVideo || isDownloading) return;
+
+    isStartingDownload = true;
+    downloadStartError = null;
+    if (activeDownloadId) {
+      downloads.dismiss(activeDownloadId);
+    }
+
+    try {
+      activeDownloadId = await downloads.start(inspectedVideo.source_url, inspectedVideo.title);
+    } catch (err: unknown) {
+      activeDownloadId = null;
+      downloadStartError = formatErrorMessage(err);
+    } finally {
+      isStartingDownload = false;
+    }
+  }
+
+  function handleCancelDownload() {
+    if (activeDownloadId) {
+      downloads.cancel(activeDownloadId);
+    }
+  }
+
+  function handleDismissDownload() {
+    if (!activeDownloadId) return;
+    downloads.dismiss(activeDownloadId);
+    activeDownloadId = null;
+  }
+
+  // Lampe d'état de l'en-tête : vue d'ensemble de la capture, lisible d'un coup d'œil.
+  type LampState = 'idle' | 'active' | 'completed' | 'failed';
+  const LAMP_LABELS: Record<LampState, string> = {
+    idle: 'Prêt',
+    active: 'Capture en cours',
+    completed: 'Terminé',
+    failed: 'Échec'
+  };
+
+  let lampState = $derived.by((): LampState => {
+    if (!activeDownload) return isStartingDownload ? 'active' : 'idle';
+    switch (activeDownload.status) {
+      case 'completed':
+        return 'completed';
+      case 'failed':
+        return 'failed';
+      case 'cancelled':
+        return 'idle';
+      default:
+        return 'active';
+    }
+  });
 
   function handleInspect(metadata: VideoMetadata) {
     inspectedVideo = metadata;
@@ -24,297 +92,298 @@
   }
 </script>
 
-<main class="app-layout">
-  <!-- En-tête de l'application -->
+<div class="app-shell">
   <header class="app-header">
     <div class="brand">
-      <div class="brand-logo" aria-hidden="true">
-        <svg
-          width="26"
-          height="26"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2.2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-        >
-          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-          <polyline points="7 10 12 15 17 10" />
-          <line x1="12" y1="15" x2="12" y2="3" />
-        </svg>
-      </div>
-      <div>
-        <h1 class="brand-title">ktk-download</h1>
-        <p class="brand-subtitle">Téléchargeur universel de vidéos haute performance</p>
-      </div>
+      <span class="lamp" data-state={lampState} aria-hidden="true"></span>
+      <h1 class="wordmark">ktk-download</h1>
     </div>
+    <p class="device-status" data-state={lampState}>{LAMP_LABELS[lampState]}</p>
   </header>
 
-  <!-- Zone de saisie et de validation d'URL -->
-  <section class="section-input">
-    <UrlInput
-      onInspect={handleInspect}
-      onError={handleError}
-      onClear={handleClear}
-      autofocus={true}
-    />
-  </section>
+  <main class="app-main">
+    <section class="section-input" aria-label="Lien de la vidéo">
+      <UrlInput
+        onInspect={handleInspect}
+        onError={handleError}
+        onClear={handleClear}
+        disabled={isDownloading}
+        autofocus={true}
+      />
+    </section>
 
-  <!-- Résultat d'inspection vidéo -->
-  {#if inspectedVideo}
-    <section class="section-preview" aria-label="Aperçu de la vidéo analysée">
-      <div class="video-card">
+    {#if inspectedVideo}
+      <section class="panel video-card" aria-label="Vidéo analysée">
         {#if inspectedVideo.thumbnail_url}
-          <div class="thumbnail-wrapper">
-            <img
-              src={inspectedVideo.thumbnail_url}
-              alt={inspectedVideo.title}
-              class="thumbnail-img"
-              loading="lazy"
-            />
+          <div class="thumbnail">
+            <img src={inspectedVideo.thumbnail_url} alt="" loading="lazy" />
             {#if inspectedVideo.duration_seconds}
-              <span class="duration-badge">
-                {formatDuration(inspectedVideo.duration_seconds)}
-              </span>
+              <span class="duration">{formatDuration(inspectedVideo.duration_seconds)}</span>
             {/if}
           </div>
         {/if}
 
         <div class="video-details">
-          <div class="source-tag">
-            <span>{inspectedVideo.source_platform}</span>
-          </div>
+          <p class="source-tag">{inspectedVideo.source_platform}</p>
 
-          <h2 class="video-title" title={inspectedVideo.title}>
-            {inspectedVideo.title}
-          </h2>
+          <h2 class="video-title" title={inspectedVideo.title}>{inspectedVideo.title}</h2>
 
           {#if inspectedVideo.author}
-            <p class="video-author">
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2"
-              >
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                <circle cx="12" cy="7" r="4" />
-              </svg>
-              <span>{inspectedVideo.author}</span>
-            </p>
+            <p class="video-author">{inspectedVideo.author}</p>
           {/if}
 
-          {#if inspectedVideo.available_formats && inspectedVideo.available_formats.length > 0}
-            <div class="formats-summary">
+          <div class="video-actions">
+            {#if inspectedVideo.available_formats.length > 0}
               <span class="formats-count">
                 {inspectedVideo.available_formats.length} format{inspectedVideo.available_formats
                   .length > 1
                   ? 's'
-                  : ''} disponible{inspectedVideo.available_formats.length > 1 ? 's' : ''}
+                  : ''}
               </span>
-            </div>
+            {/if}
+
+            <button
+              type="button"
+              class="download-btn"
+              onclick={handleDownload}
+              disabled={isDownloading}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
+            </button>
+          </div>
+
+          {#if downloadStartError}
+            <p class="download-start-error" role="alert">{downloadStartError}</p>
           {/if}
         </div>
-      </div>
-    </section>
-  {:else if !currentError}
-    <!-- Guide visuel des plateformes supportées -->
-    <section class="section-supported">
-      <h3 class="supported-heading">Plateformes compatibles</h3>
-      <div class="supported-grid">
-        <div class="platform-card card-youtube">
-          <div class="platform-icon" aria-hidden="true">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <path
-                d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
-              />
-            </svg>
+      </section>
+    {:else if !currentError && !activeDownload}
+      <section class="panel sources" aria-labelledby="sources-heading">
+        <h2 id="sources-heading" class="sources-heading">Sources prises en charge</h2>
+        <dl class="sources-list">
+          <div class="source-row">
+            <dt>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
+                />
+              </svg>
+              YouTube
+            </dt>
+            <dd>Vidéos, Shorts et audio MP3</dd>
           </div>
-          <div class="platform-info">
-            <div class="platform-name">YouTube</div>
-            <div class="platform-desc">Vidéos standard, Shorts, listes et audio MP3</div>
+          <div class="source-row">
+            <dt>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <polygon points="10 8 16 12 10 16 10 8" />
+              </svg>
+              Liens directs
+            </dt>
+            <dd>Fichiers <code>.mp4</code> et flux HLS <code>.m3u8</code></dd>
           </div>
-        </div>
+        </dl>
+        <p class="sources-hint">Collez un lien ci-dessus, puis lancez l'analyse.</p>
+      </section>
+    {/if}
 
-        <div class="platform-card card-movibox">
-          <div class="platform-icon" aria-hidden="true">
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-              <line x1="7" y1="2" x2="7" y2="22" />
-              <line x1="17" y1="2" x2="17" y2="22" />
-              <line x1="2" y1="12" x2="22" y2="12" />
-              <line x1="2" y1="7" x2="7" y2="7" />
-              <line x1="2" y1="17" x2="7" y2="17" />
-              <line x1="17" y1="17" x2="22" y2="17" />
-              <line x1="17" y1="7" x2="22" y2="7" />
-            </svg>
-          </div>
-          <div class="platform-info">
-            <div class="platform-name">MoviBox</div>
-            <div class="platform-desc">Films et séries hébergés sur movibox.net</div>
-          </div>
-        </div>
-
-        <div class="platform-card card-generic">
-          <div class="platform-icon" aria-hidden="true">
-            <svg
-              width="22"
-              height="22"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-            >
-              <circle cx="12" cy="12" r="10" />
-              <polygon points="10 8 16 12 10 16 10 8" />
-            </svg>
-          </div>
-          <div class="platform-info">
-            <div class="platform-name">Flux Directs Web</div>
-            <div class="platform-desc">Flux vidéo HLS (.m3u8) et fichiers directs (.mp4)</div>
-          </div>
-        </div>
-      </div>
-    </section>
-  {/if}
-</main>
+    {#if activeDownload}
+      <section class="section-download" aria-label="Téléchargement">
+        <DownloadProgress
+          entry={activeDownload}
+          onCancel={handleCancelDownload}
+          onDismiss={handleDismissDownload}
+        />
+      </section>
+    {/if}
+  </main>
+</div>
 
 <style>
-  .app-layout {
-    max-width: 960px;
-    margin: 0 auto;
-    padding: 32px 20px 60px;
+  .app-shell {
+    min-height: 100%;
     display: flex;
     flex-direction: column;
-    gap: 32px;
   }
 
-  /* En-tête */
+  /* En-tête : nom de l'appareil et lampe d'état */
   .app-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid var(--border-light);
-    padding-bottom: 20px;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-6);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
   .brand {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: var(--space-3);
+    min-width: 0;
   }
 
-  .brand-logo {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 46px;
-    height: 46px;
-    border-radius: var(--radius-lg);
-    background: linear-gradient(135deg, #2563eb, #3b82f6);
-    color: #ffffff;
-    box-shadow: 0 4px 10px rgba(37, 99, 235, 0.25);
-  }
-
-  .brand-title {
-    font-size: 1.4rem;
-    font-weight: 700;
-    color: var(--text-main);
+  .wordmark {
+    font-size: var(--text-xl);
+    font-weight: 800;
+    font-stretch: 125%;
     letter-spacing: -0.02em;
-    line-height: 1.2;
+    line-height: 1;
+    color: var(--color-text);
   }
 
-  .brand-subtitle {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    margin-top: 2px;
+  .lamp {
+    width: 10px;
+    height: 10px;
+    border-radius: var(--radius-full);
+    flex-shrink: 0;
+    background-color: var(--color-border-strong);
+    box-shadow: inset 0 0 0 1px oklch(0.22 0.012 var(--neutral-hue) / 0.15);
+    transition: background-color var(--duration-base) var(--ease-out);
   }
 
-  /* Section input */
-  .section-input {
+  .lamp[data-state='active'] {
+    background-color: var(--color-accent);
+    box-shadow: 0 0 0 3px oklch(0.64 0.19 var(--signal-hue) / 0.22);
+    animation: lamp-pulse 1.4s ease-in-out infinite;
+  }
+
+  .lamp[data-state='completed'] {
+    background-color: var(--color-success-meter);
+  }
+
+  .lamp[data-state='failed'] {
+    background-color: var(--color-danger);
+  }
+
+  .device-status {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+
+  .device-status[data-state='active'] {
+    color: var(--color-accent-strong);
+  }
+
+  .device-status[data-state='completed'] {
+    color: var(--color-success);
+  }
+
+  .device-status[data-state='failed'] {
+    color: var(--color-danger);
+  }
+
+  .app-main {
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    padding: var(--space-8) var(--space-6) var(--space-12);
     display: flex;
-    justify-content: center;
+    flex-direction: column;
+    gap: var(--space-6);
   }
 
-  /* Aperçu de la vidéo inspectée */
-  .section-preview {
-    animation: slideUp 250ms ease;
+  .panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+    animation: rise var(--duration-base) var(--ease-out);
   }
 
+  /* Vidéo analysée */
   .video-card {
     display: flex;
-    gap: 20px;
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-lg);
-    padding: 16px;
-    box-shadow: var(--shadow-sm);
+    gap: var(--space-5);
+    padding: var(--space-4);
   }
 
-  .thumbnail-wrapper {
+  .thumbnail {
     position: relative;
-    width: 220px;
-    height: 124px;
+    width: 208px;
+    aspect-ratio: 16 / 9;
     border-radius: var(--radius-md);
     overflow: hidden;
-    background-color: var(--bg-surface-muted);
+    background-color: var(--color-surface-sunken);
     flex-shrink: 0;
   }
 
-  .thumbnail-img {
+  .thumbnail img {
     width: 100%;
     height: 100%;
     object-fit: cover;
   }
 
-  .duration-badge {
+  .duration {
     position: absolute;
-    bottom: 6px;
-    right: 6px;
-    background-color: rgba(15, 23, 42, 0.85);
-    color: #ffffff;
-    font-size: 0.75rem;
-    font-weight: 600;
-    padding: 2px 6px;
-    border-radius: 4px;
+    right: var(--space-2);
+    bottom: var(--space-2);
+    padding: 1px var(--space-1);
+    border-radius: var(--radius-sm);
+    background-color: oklch(0.22 0.012 var(--neutral-hue) / 0.85);
+    color: var(--color-on-accent);
     font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
   }
 
   .video-details {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--space-1);
     min-width: 0;
     flex: 1;
   }
 
   .source-tag {
-    display: inline-flex;
-    align-self: flex-start;
-    padding: 2px 8px;
-    background-color: var(--primary-subtle);
-    color: var(--primary);
-    border: 1px solid var(--primary-border);
-    border-radius: var(--radius-full);
-    font-size: 0.75rem;
-    font-weight: 600;
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
   }
 
   .video-title {
-    font-size: 1.1rem;
-    font-weight: 600;
-    color: var(--text-main);
-    line-height: 1.35;
+    font-size: var(--text-lg);
+    font-weight: 650;
+    line-height: 1.3;
+    color: var(--color-text);
     overflow: hidden;
     text-overflow: ellipsis;
     display: -webkit-box;
@@ -324,115 +393,148 @@
   }
 
   .video-author {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 0.85rem;
-    color: var(--text-muted);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
   }
 
-  .formats-summary {
+  .video-actions {
     margin-top: auto;
-    font-size: 0.825rem;
-    color: var(--text-muted);
+    padding-top: var(--space-3);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3);
   }
 
-  /* Plateformes compatibles */
-  .section-supported {
+  .formats-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-left: auto;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    background-color: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    font-size: var(--text-sm);
+    font-weight: 650;
+    box-shadow: var(--shadow-control);
+    transition: background-color var(--duration-fast) var(--ease-out);
+  }
+
+  .download-btn:hover:not(:disabled) {
+    background-color: var(--color-accent-stronger);
+  }
+
+  .download-btn:disabled {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text-muted);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+
+  .download-start-error {
+    font-size: var(--text-sm);
+    color: var(--color-danger);
+  }
+
+  /* État vide : sources prises en charge */
+  .sources {
+    padding: var(--space-5) var(--space-5) var(--space-4);
+  }
+
+  .sources-heading {
+    font-size: var(--text-sm);
+    font-weight: 650;
+    color: var(--color-text);
+    margin-bottom: var(--space-2);
+  }
+
+  .sources-list {
     display: flex;
     flex-direction: column;
-    gap: 12px;
   }
 
-  .supported-heading {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--text-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-  }
-
-  .supported-grid {
+  .source-row {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-    gap: 14px;
+    grid-template-columns: 11rem 1fr;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-top: 1px solid var(--color-border);
   }
 
-  .platform-card {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 14px;
-    background-color: var(--bg-surface);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-md);
-    box-shadow: var(--shadow-xs);
-    transition:
-      transform var(--transition-fast),
-      box-shadow var(--transition-fast);
-  }
-
-  .platform-card:hover {
-    transform: translateY(-2px);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .platform-icon {
+  .source-row dt {
     display: flex;
     align-items: center;
-    justify-content: center;
-    width: 38px;
-    height: 38px;
-    border-radius: var(--radius-md);
+    gap: var(--space-2);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .source-row dt svg {
+    color: var(--color-text-muted);
     flex-shrink: 0;
   }
 
-  .card-youtube .platform-icon {
-    background-color: #fef2f2;
-    color: #dc2626;
+  .source-row dd {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
   }
 
-  .card-movibox .platform-icon {
-    background-color: #eef2ff;
-    color: #4f46e5;
+  .source-row code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--color-text);
   }
 
-  .card-generic .platform-icon {
-    background-color: #ecfdf5;
-    color: #059669;
+  .sources-hint {
+    margin-top: var(--space-2);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--color-border);
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
   }
 
-  .platform-name {
-    font-size: 0.9rem;
-    font-weight: 600;
-    color: var(--text-main);
+  @keyframes lamp-pulse {
+    50% {
+      box-shadow: 0 0 0 5px oklch(0.64 0.19 var(--signal-hue) / 0.08);
+    }
   }
 
-  .platform-desc {
-    font-size: 0.8rem;
-    color: var(--text-muted);
-    margin-top: 2px;
-    line-height: 1.35;
-  }
-
-  @keyframes slideUp {
+  @keyframes rise {
     from {
       opacity: 0;
-      transform: translateY(6px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
+      transform: translateY(4px);
     }
   }
 
   @media (max-width: 640px) {
+    .app-header {
+      padding: var(--space-3) var(--space-4);
+    }
+
+    .app-main {
+      padding: var(--space-6) var(--space-4) var(--space-10);
+    }
+
     .video-card {
       flex-direction: column;
     }
-    .thumbnail-wrapper {
+
+    .thumbnail {
       width: 100%;
-      height: 180px;
+    }
+
+    .source-row {
+      grid-template-columns: 1fr;
+      gap: var(--space-1);
     }
   }
 </style>

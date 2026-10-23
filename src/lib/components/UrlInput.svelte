@@ -18,7 +18,7 @@
     onClear,
     disabled = false,
     autofocus = false,
-    placeholder = 'https://www.youtube.com/watch?v=... ou https://movibox.net/...'
+    placeholder = 'https://www.youtube.com/watch?v=…'
   }: Props = $props();
 
   // États internes gérés avec les Runes Svelte 5
@@ -124,7 +124,7 @@
       hasBlurred = true;
       inspectAttempted = false;
 
-      pasteNotification = 'Lien collé depuis le presse-papier !';
+      pasteNotification = 'Lien collé depuis le presse-papier';
       setTimeout(() => {
         pasteNotification = null;
       }, 2500);
@@ -207,16 +207,13 @@
 <div class="url-input-card">
   <!-- En-tête avec label et indication de compatibilité -->
   <div class="header-group">
-    <label for="video-url-field" class="input-label"> URL de la vidéo </label>
-    <span id="url-formats-hint" class="input-hint">
-      YouTube, MoviBox (movibox.net), flux HLS (.m3u8), MP4 direct
-    </span>
+    <label for="video-url-field" class="input-label">Lien de la vidéo</label>
+    <span id="url-formats-hint" class="input-hint"> YouTube, flux HLS (.m3u8), MP4 direct </span>
   </div>
 
   <!-- Barre de saisie principale -->
   <div
     class="input-wrapper"
-    class:is-focused={false}
     class:is-valid={validationResult !== null}
     class:is-invalid={shouldShowError}
     class:is-disabled={disabled || isInspecting}
@@ -315,14 +312,13 @@
       onclick={handleInspect}
       disabled={!canInspect}
       title="Analyser et charger les informations de la vidéo (Entrée)"
-      aria-label="Analyser la vidéo"
     >
       {#if isInspecting}
         <span class="spinner" aria-hidden="true"></span>
-        <span>Analyse en cours...</span>
+        <span>Analyse…</span>
       {:else if isValidating}
         <span class="spinner spinner-subtle" aria-hidden="true"></span>
-        <span>Vérification...</span>
+        <span>Vérification…</span>
       {:else}
         <svg
           width="16"
@@ -352,6 +348,7 @@
         fill="none"
         stroke="currentColor"
         stroke-width="2.5"
+        aria-hidden="true"
       >
         <polyline points="20 6 9 17 4 12" />
       </svg>
@@ -363,41 +360,20 @@
   {#if validationResult}
     <div class="metadata-status-bar">
       <!-- Badge de plateforme reconnue -->
-      <div
-        class="platform-badge"
-        class:badge-youtube={validationResult.platform.toLowerCase().includes('youtube')}
-        class:badge-movibox={validationResult.platform.toLowerCase().includes('movibox')}
-        class:badge-tiktok={validationResult.platform.toLowerCase().includes('tiktok')}
-        class:badge-twitter={validationResult.platform.toLowerCase().includes('twitter')}
-        class:badge-generic={validationResult.platform.toLowerCase().includes('web') ||
-          validationResult.platform.toLowerCase().includes('direct')}
-      >
+      <div class="platform-badge">
         {#if validationResult.platform.toLowerCase().includes('youtube')}
           <!-- Logo YouTube SVG -->
-          <svg class="badge-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
-            <path
-              d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
-            />
-          </svg>
-        {:else if validationResult.platform.toLowerCase().includes('movibox')}
-          <!-- Logo MoviBox Film SVG -->
           <svg
             class="badge-icon"
             width="14"
             height="14"
             viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
+            fill="currentColor"
+            aria-hidden="true"
           >
-            <rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18" />
-            <line x1="7" y1="2" x2="7" y2="22" />
-            <line x1="17" y1="2" x2="17" y2="22" />
-            <line x1="2" y1="12" x2="22" y2="12" />
-            <line x1="2" y1="7" x2="7" y2="7" />
-            <line x1="2" y1="17" x2="7" y2="17" />
-            <line x1="17" y1="17" x2="22" y2="17" />
-            <line x1="17" y1="7" x2="22" y2="7" />
+            <path
+              d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
+            />
           </svg>
         {:else}
           <!-- Logo Flux Web SVG -->
@@ -409,6 +385,7 @@
             fill="none"
             stroke="currentColor"
             stroke-width="2"
+            aria-hidden="true"
           >
             <circle cx="12" cy="12" r="10" />
             <line x1="2" y1="12" x2="22" y2="12" />
@@ -418,12 +395,12 @@
           </svg>
         {/if}
         <span class="badge-text">{validationResult.platform}</span>
-        <span class="badge-domain">({validationResult.domain})</span>
+        <span class="badge-domain">{validationResult.domain}</span>
       </div>
 
       <!-- Information de nettoyage d'URL (tracking strip) -->
       {#if isSanitized}
-        <div class="sanitized-tag" title="Paramètres d'analyse et de pistage retirés">
+        <div class="sanitized-tag">
           <svg
             width="13"
             height="13"
@@ -431,10 +408,11 @@
             fill="none"
             stroke="currentColor"
             stroke-width="2.5"
+            aria-hidden="true"
           >
             <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
           </svg>
-          <span>URL nettoyée et sécurisée</span>
+          <span>Paramètres de pistage retirés</span>
         </div>
       {/if}
     </div>
@@ -445,6 +423,7 @@
     <div id="url-validation-error" class="error-banner" role="alert">
       <svg
         class="error-icon"
+        aria-hidden="true"
         width="16"
         height="16"
         viewBox="0 0 24 24"
@@ -467,10 +446,8 @@
   .url-input-card {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: var(--space-2);
     width: 100%;
-    max-width: 780px;
-    margin: 0 auto;
     text-align: left;
   }
 
@@ -479,249 +456,224 @@
     justify-content: space-between;
     align-items: baseline;
     flex-wrap: wrap;
-    gap: 6px;
-    padding: 0 4px;
+    gap: var(--space-2);
+    padding: 0 var(--space-1);
   }
 
   .input-label {
-    font-size: 0.925rem;
-    font-weight: 600;
-    color: var(--text-main);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
   }
 
   .input-hint {
-    font-size: 0.8rem;
-    color: var(--text-muted);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
-  /* Boîtier principal de l'input */
+  /* Boîtier de saisie */
   .input-wrapper {
     display: flex;
     align-items: center;
-    background-color: var(--bg-surface);
-    border: 1.5px solid var(--border-light);
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-1) var(--space-1) var(--space-4);
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border-strong);
     border-radius: var(--radius-lg);
-    box-shadow: var(--shadow-sm);
-    padding: 4px 6px 4px 14px;
-    gap: 8px;
+    box-shadow: var(--shadow-panel);
     transition:
-      border-color var(--transition-fast),
-      box-shadow var(--transition-fast),
-      background-color var(--transition-fast);
+      border-color var(--duration-fast) var(--ease-out),
+      box-shadow var(--duration-fast) var(--ease-out),
+      background-color var(--duration-fast) var(--ease-out);
   }
 
   .input-wrapper:focus-within {
-    border-color: var(--border-focus);
+    border-color: var(--color-accent-strong);
     box-shadow:
-      0 0 0 3px rgba(37, 99, 235, 0.15),
-      var(--shadow-sm);
+      0 0 0 3px oklch(0.64 0.19 var(--signal-hue) / 0.18),
+      var(--shadow-panel);
   }
 
   .input-wrapper.is-valid {
-    border-color: var(--success-border);
+    border-color: var(--color-success);
   }
 
   .input-wrapper.is-invalid {
-    border-color: var(--error);
-    background-color: var(--error-subtle);
+    border-color: var(--color-danger);
+    background-color: var(--color-danger-wash);
   }
 
   .input-wrapper.is-disabled {
-    opacity: 0.7;
-    background-color: var(--bg-surface-muted);
+    background-color: var(--color-surface-sunken);
+    border-color: var(--color-border);
+    box-shadow: none;
     pointer-events: none;
   }
 
   .prefix-icon {
     display: flex;
-    align-items: center;
-    color: var(--text-subtle);
+    color: var(--color-text-subtle);
     flex-shrink: 0;
   }
 
   .input-wrapper:focus-within .prefix-icon {
-    color: var(--primary);
+    color: var(--color-accent-strong);
   }
 
   .text-input {
     flex: 1;
     min-width: 0;
+    padding: var(--space-2) var(--space-1);
     border: none;
     outline: none;
     background: transparent;
-    font-size: 0.95rem;
-    color: var(--text-main);
-    padding: 8px 4px;
+    font-family: var(--font-mono);
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    user-select: text;
   }
 
   .text-input::placeholder {
-    color: var(--text-subtle);
-    font-size: 0.9rem;
+    color: var(--color-text-subtle);
   }
 
-  /* Boutons d'action */
+  .text-input:disabled {
+    color: var(--color-text-muted);
+  }
+
+  /* Boutons */
   .action-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 6px;
-    padding: 7px 12px;
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
-    font-size: 0.875rem;
-    font-weight: 500;
-    transition: all var(--transition-fast);
+    font-size: var(--text-sm);
+    font-weight: 600;
     flex-shrink: 0;
-    user-select: none;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
   }
 
   .clear-btn {
-    padding: 6px;
+    min-height: 32px;
+    padding: var(--space-1);
     border-radius: var(--radius-full);
-    color: var(--text-subtle);
+    color: var(--color-text-subtle);
   }
 
   .clear-btn:hover {
-    color: var(--text-main);
-    background-color: var(--bg-surface-hover);
+    color: var(--color-text);
+    background-color: var(--color-surface-hover);
   }
 
   .paste-btn {
-    background-color: var(--bg-surface-muted);
-    color: var(--text-muted);
-    border: 1px solid var(--border-light);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
   }
 
   .paste-btn:hover:not(:disabled) {
-    background-color: var(--bg-surface-hover);
-    color: var(--text-main);
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
   }
 
+  /* L'orange est réservé à la capture : l'analyse utilise l'encre */
   .inspect-btn {
-    background-color: var(--primary);
-    color: var(--text-inverse);
-    font-weight: 600;
-    padding: 8px 16px;
-    box-shadow: var(--shadow-xs);
+    padding: var(--space-2) var(--space-4);
+    background-color: var(--color-inverse);
+    color: var(--color-on-inverse);
+    box-shadow: var(--shadow-control);
   }
 
   .inspect-btn:hover:not(:disabled) {
-    background-color: var(--primary-hover);
-    box-shadow: var(--shadow-sm);
-  }
-
-  .inspect-btn:active:not(:disabled) {
-    background-color: var(--primary-active);
+    background-color: var(--color-inverse-hover);
   }
 
   .inspect-btn:disabled {
-    background-color: var(--text-subtle);
-    opacity: 0.65;
+    background-color: var(--color-surface-hover);
+    color: var(--color-text-muted);
+    box-shadow: none;
     cursor: not-allowed;
   }
 
-  /* Notification discrète de collage */
+  /* Confirmation de collage */
   .toast-indicator {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    font-size: 0.8rem;
-    color: var(--success);
-    background-color: var(--success-subtle);
-    padding: 3px 10px;
-    border-radius: var(--radius-full);
-    border: 1px solid var(--success-border);
+    gap: var(--space-2);
     align-self: flex-start;
-    animation: fadeIn 200ms ease;
+    padding: 2px var(--space-3);
+    border-radius: var(--radius-full);
+    background-color: var(--color-success-wash);
+    color: var(--color-success);
+    font-size: var(--text-xs);
+    font-weight: 500;
+    animation: fade-in var(--duration-base) var(--ease-out);
   }
 
-  /* Barre d'état de détection de plateforme */
+  /* Plateforme détectée */
   .metadata-status-bar {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 2px 4px;
     flex-wrap: wrap;
-    animation: fadeIn 200ms ease;
+    gap: var(--space-3);
+    padding: 0 var(--space-1);
+    animation: fade-in var(--duration-base) var(--ease-out);
   }
 
   .platform-badge {
     display: inline-flex;
     align-items: center;
-    gap: 6px;
-    padding: 3px 10px;
+    gap: var(--space-2);
+    padding: 2px var(--space-3) 2px var(--space-2);
+    border: 1px solid var(--color-border);
     border-radius: var(--radius-full);
-    font-size: 0.825rem;
+    background-color: var(--color-surface);
+    font-size: var(--text-xs);
     font-weight: 600;
-    background-color: var(--bg-surface-muted);
-    color: var(--text-main);
-    border: 1px solid var(--border-light);
+    color: var(--color-text);
   }
 
   .badge-icon {
     flex-shrink: 0;
-  }
-
-  .badge-youtube {
-    background-color: #fef2f2;
-    border-color: #fecaca;
-    color: #dc2626;
-  }
-
-  .badge-movibox {
-    background-color: #eef2ff;
-    border-color: #c7d2fe;
-    color: #4f46e5;
-  }
-
-  .badge-tiktok {
-    background-color: #fff1f2;
-    border-color: #fecdd3;
-    color: #e11d48;
-  }
-
-  .badge-twitter {
-    background-color: #f8fafc;
-    border-color: #cbd5e1;
-    color: #0f172a;
-  }
-
-  .badge-generic {
-    background-color: #ecfdf5;
-    border-color: #a7f3d0;
-    color: #059669;
+    color: var(--color-text-muted);
   }
 
   .badge-domain {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
     font-weight: 400;
-    font-size: 0.775rem;
-    opacity: 0.8;
+    color: var(--color-text-muted);
   }
 
   .sanitized-tag {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: 0.775rem;
-    color: var(--text-muted);
-    background-color: var(--bg-surface-muted);
-    padding: 3px 8px;
-    border-radius: var(--radius-full);
-    border: 1px solid var(--border-light);
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
-  /* Bannière d'erreur */
+  /* Erreur de saisie */
   .error-banner {
     display: flex;
     align-items: flex-start;
-    gap: 8px;
-    padding: 10px 12px;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--color-danger-border);
     border-radius: var(--radius-md);
-    background-color: var(--error-subtle);
-    border: 1px solid var(--error-border);
-    color: var(--error);
-    font-size: 0.85rem;
+    background-color: var(--color-danger-wash);
+    color: var(--color-danger);
+    font-size: var(--text-sm);
     line-height: 1.4;
-    animation: fadeIn 200ms ease;
+    animation: fade-in var(--duration-base) var(--ease-out);
   }
 
   .error-icon {
@@ -733,19 +685,19 @@
     flex: 1;
   }
 
-  /* Spinners de chargement */
+  /* Indicateurs de chargement */
   .spinner {
     width: 14px;
     height: 14px;
-    border: 2px solid rgba(255, 255, 255, 0.4);
+    border: 2px solid oklch(0.995 0 0 / 0.35);
+    border-top-color: currentColor;
     border-radius: 50%;
-    border-top-color: #ffffff;
     animation: spin 700ms linear infinite;
   }
 
   .spinner-subtle {
-    border-color: rgba(37, 99, 235, 0.2);
-    border-top-color: var(--primary);
+    border-color: oklch(0.46 0.012 var(--neutral-hue) / 0.25);
+    border-top-color: currentColor;
   }
 
   @keyframes spin {
@@ -754,26 +706,25 @@
     }
   }
 
-  @keyframes fadeIn {
+  @keyframes fade-in {
     from {
       opacity: 0;
-      transform: translateY(-3px);
-    }
-    to {
-      opacity: 1;
-      transform: translateY(0);
+      transform: translateY(-2px);
     }
   }
 
   @media (max-width: 600px) {
-    .btn-text {
-      display: none;
-    }
+    .btn-text,
     .input-hint {
       display: none;
     }
+
     .action-btn {
-      padding: 7px 9px;
+      padding: var(--space-2);
+    }
+
+    .inspect-btn {
+      padding: var(--space-2) var(--space-3);
     }
   }
 </style>

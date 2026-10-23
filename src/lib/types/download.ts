@@ -56,6 +56,8 @@ export interface DownloadRequest {
   format_id?: string;
   output_dir?: string;
   custom_filename?: string;
+  /** UUID généré côté client pour corréler les événements `download-progress` et annuler. */
+  download_id?: string;
 }
 
 /**
