@@ -1,6 +1,6 @@
 # 🎬 ktk-download
 
-> Application de bureau moderne, ultra-rapide et multi-plateforme pour le téléchargement de vidéos depuis le web (YouTube, plateformes de streaming telles que MoviBox, etc.).
+> Application de bureau moderne, ultra-rapide et multi-plateforme pour le téléchargement de vidéos depuis le web (YouTube, flux HLS, fichiers MP4 directs, etc.).
 
 ---
 
@@ -29,7 +29,7 @@
 
 L'objectif principal est de s'affranchir des contraintes des scripts traditionnels mono-plateformes :
 
-- **Prise en charge universelle** : Au-delà de YouTube, supporter la majorité des sites hébergeant du contenu vidéo (sites de streaming direct comme [MoviBox](https://movibox.net/), lecteurs HLS/m3u8, MP4 directs, plateformes communautaires).
+- **Prise en charge universelle** : Au-delà de YouTube, supporter la majorité des sites hébergeant du contenu vidéo (lecteurs HLS/m3u8, MP4 directs, plateformes communautaires prises en charge par yt-dlp).
 - **Interface graphique moderne** : Une interface soignée, claire et épurée (axée sur un thème clair moderne pour le moment, privilégiant la lisibilité et l'ergonomie).
 - **Suivi en temps réel** : Barre de progression dynamique avec vitesse de transfert, pourcentage précis, volume téléchargé et estimation du temps restant.
 - **Performance native & Légèreté** : Consommation mémoire minimale et vitesse d'exécution optimale grâce au runtime Rust de Tauri v2.
@@ -40,20 +40,20 @@ L'objectif principal est de s'affranchir des contraintes des scripts traditionne
 
 Ce projet est la réécriture complète et la modernisation d'un premier outil en ligne de commande :
 
-| Critères                | Version Initiale (Python)                         | Version Actuelle (`ktk-download`)                                      |
-| :---------------------- | :------------------------------------------------ | :--------------------------------------------------------------------- |
-| **Interface**           | Terminal / CLI rudimentaire                       | Interface Desktop moderne (SvelteKit + Tauri v2)                       |
-| **Technologies**        | Python 3 + `pytube`                               | Rust (Backend natif) + SvelteKit / Svelte 5 (Frontend)                 |
-| **Couverture de sites** | YouTube uniquement                                | Multi-sites (YouTube, [MoviBox](https://movibox.net/), flux web, etc.) |
-| **Contrôle & Qualité**  | Basse résolution fixe (`get_lowest_resolution()`) | Choix de résolutions, extraction audio/vidéo                           |
-| **Retour utilisateur**  | Messages console statiques                        | Barre de progression en temps réel & notifications                     |
-| **Portabilité**         | Dépendance à un interpréteur Python local         | Binaire natif autonome (.deb, .AppImage, .exe, .dmg)                   |
+| Critères                | Version Initiale (Python)                         | Version Actuelle (`ktk-download`)                      |
+| :---------------------- | :------------------------------------------------ | :----------------------------------------------------- |
+| **Interface**           | Terminal / CLI rudimentaire                       | Interface Desktop moderne (SvelteKit + Tauri v2)       |
+| **Technologies**        | Python 3 + `pytube`                               | Rust (Backend natif) + SvelteKit / Svelte 5 (Frontend) |
+| **Couverture de sites** | YouTube uniquement                                | Multi-sites (YouTube, flux web, etc.)                  |
+| **Contrôle & Qualité**  | Basse résolution fixe (`get_lowest_resolution()`) | Choix de résolutions, extraction audio/vidéo           |
+| **Retour utilisateur**  | Messages console statiques                        | Barre de progression en temps réel & notifications     |
+| **Portabilité**         | Dépendance à un interpréteur Python local         | Binaire natif autonome (.deb, .AppImage, .exe, .dmg)   |
 
 ---
 
 ## ✨ Fonctionnalités clés
 
-- 🌐 **Extraction multi-sources** : Détection automatique des flux vidéo sur YouTube, MoviBox et autres plateformes de diffusion.
+- 🌐 **Extraction multi-sources** : Détection automatique des flux vidéo sur YouTube et les autres plateformes prises en charge par yt-dlp.
 - 📊 **Progression dynamique** : Barre d'avancement animée et réactive alimentée par les événements IPC Tauri.
 - ⚡ **Performances Rust** : Téléchargement asynchrone non bloquant avec streaming des paquets sur le disque.
 - 🎨 **Design épuré et moderne** : Interface intuitive, aérée et réactive conçue avec Svelte 5 et Tailwind/CSS moderne.
@@ -136,6 +136,19 @@ Avant de commencer, assurez-vous d'avoir installé sur votre machine :
 - **Sur Windows** :
   - Microsoft C++ Build Tools et WebView2 (inclus par défaut sur Windows 10/11)
 
+### 3. Moteur d'extraction vidéo
+
+- **yt-dlp** : moteur de téléchargement des plateformes (YouTube, etc.). L'application le cherche dans `YTDLP_PATH`, `~/.local/bin`, les dossiers système puis le `PATH`.
+- **ffmpeg** : fusionne les flux audio et vidéo séparés et convertit en MP3. Sans ffmpeg, seuls les formats déjà combinés sont téléchargeables.
+- **Runtime JavaScript + solveur EJS** : sans eux, YouTube ne fournit qu'une partie des formats. L'application détecte `deno`, `node` ou `bun` et le transmet à yt-dlp ; le solveur est fourni par le paquet `yt-dlp-ejs`.
+
+```bash
+sudo apt install -y ffmpeg
+pip install --user "yt-dlp[default]"
+```
+
+Le paquet `yt-dlp[default]` installe `yt-dlp` et `yt-dlp-ejs`. Sur les distributions qui appliquent la PEP 668 (Ubuntu 23.04+), ajoutez `--break-system-packages` ou utilisez `pipx install "yt-dlp[default]"`.
+
 ---
 
 ## 🚀 Installation & Lancement
@@ -180,7 +193,6 @@ Les exécutables générés se trouvent dans le répertoire `src-tauri/target/re
 - [ ] Implémentation du composant de barre de progression en temps réel
 - [ ] Moteur de téléchargement Rust multi-sources :
   - [ ] Intégration / support des extracteurs universels (YouTube, flux HLS `.m3u8`, MP4 direct)
-  - [ ] Support ciblé des sites de streaming vidéo tels que [MoviBox](https://movibox.net/)
 - [ ] Sélecteur de qualité (1080p, 720p, 480p, Audio MP3)
 - [ ] Historique local des téléchargements avec ouverture directe du dossier
 - [ ] File d'attente de téléchargements simultanés (téléchargements multiples)

@@ -1,6 +1,6 @@
 # Roadmap — ktk-download
 
-> ktk-download is a modern, cross-platform desktop application for downloading videos from the web, built with Tauri v2 and Rust backend, and SvelteKit 2 + Svelte 5 frontend. It aims to provide universal video extraction (YouTube, MoviBox, HLS/MP4 streams), real-time progress tracking, and native performance with minimal memory footprint.
+> ktk-download is a modern, cross-platform desktop application for downloading videos from the web, built with Tauri v2 and Rust backend, and SvelteKit 2 + Svelte 5 frontend. It aims to provide universal video extraction (YouTube, HLS/MP4 streams), real-time progress tracking, and native performance with minimal memory footprint.
 
 ## Phase 1 : Socle & Configuration
 
@@ -14,16 +14,15 @@
 ## Phase 2 : Backend & Moteur de Téléchargement
 
 - [x] Implémenter la commande IPC download_video en Rust avec support streaming asynchrone et émission d'événements de progression via l'API Tauri IPC
-- [x] Intégrer yt-dlp (ou des extracteurs bundlés) comme moteur d'extraction vidéo sous-jacent avec support YouTube et MoviBox
+- [x] Intégrer yt-dlp (ou des extracteurs bundlés) comme moteur d'extraction vidéo sous-jacent avec support YouTube et flux web génériques
 - [x] Développer la logique de validation et d'assainissement des URLs avec vérification stricte du protocole et des domaines autorisés
-- [x] Créer le pipeline de streaming asynchrone vers le disque avec écriture non bloquante et émission périodique du pourcentage de progression, de la vitesse et du temps restant
 - [x] Ajouter une gestion d'erreurs robuste : timeouts réseau, URLs invalides, sites non supportés, et sérialisation d'erreurs utilisateur-friendly
 
 ## Phase 3 : Interface Utilisateur & Expérience Utilisateur
 
 - [x] Créer le composant Svelte 5 d'entrée d'URL avec validation en temps réel, détection de service et support copier-coller
-- [ ] Implémenter la barre de progression réactive liée au store `$state` Svelte 5, mise à jour asynchrone via les événements IPC Tauri
-- [ ] Concevoir et intégrer le thème clair moderne avec échelle typographique, palette de couleurs et mise en page réactive (Tailwind CSS ou CSS modules)
+- [x] Implémenter la barre de progression réactive liée au store `$state` Svelte 5, mise à jour asynchrone via les événements IPC Tauri
+- [x] Concevoir et intégrer le thème clair moderne avec échelle typographique, palette de couleurs et mise en page réactive (Tailwind CSS ou CSS modules)
 - [ ] Développer le sélecteur de dossier de destination avec API file picker native et accès rapide aux dossiers récemment utilisés
 - [ ] Ajouter un système de notifications (toasts) pour le démarrage, la complétion, les erreurs et les jalons de progression du téléchargement
 
