@@ -10,6 +10,7 @@ use crate::models::{
     DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, ValidatedUrlPayload,
     VideoMetadata,
 };
+use crate::quality::QualityPreset;
 use crate::validator::{self, VideoPlatform};
 
 /// Commande IPC : Valide et assainit instantanément une URL sans bloquer l'interface.
@@ -64,6 +65,7 @@ pub async fn download_video(
 ) -> Result<DownloadResult, CommandError> {
     let validated = validator::validate_and_sanitize_url(&request.url)?;
     let output_dir = validate_output_dir(request.output_dir.as_deref())?;
+    let quality = QualityPreset::parse(request.format_id.as_deref().unwrap_or_default())?;
 
     let download_id = resolve_download_id(request.download_id.as_deref())?;
     if registry.is_active(&download_id) {
@@ -73,8 +75,11 @@ pub async fn download_video(
     }
     let cancel_token = registry.register(&download_id);
 
-    let format = request.format_id.as_deref().unwrap_or("best");
-    let extension = if format == "audio_only" { "mp3" } else { "mp4" };
+    let extension = if quality.is_audio_only() {
+        "mp3"
+    } else {
+        "mp4"
+    };
 
     // Notification initiale d'entrée en file d'attente
     let initial_payload = DownloadProgressPayload {
@@ -97,7 +102,10 @@ pub async fn download_video(
         extension,
     );
 
-    let direct_stream_allowed = allows_direct_stream(&validated.platform);
+    // Le streaming direct enregistre le fichier tel quel : il ne sait ni plafonner la qualité
+    // ni extraire l'audio, il n'est donc possible qu'avec la qualité par défaut.
+    let direct_stream_allowed =
+        allows_direct_stream(&validated.platform) && quality == QualityPreset::Best;
     let stream_directly = || {
         downloader::download_stream(
             &app,
@@ -114,7 +122,7 @@ pub async fn download_video(
             &app,
             &download_id,
             &validated.canonical_url,
-            Some(format),
+            quality,
             &target_path,
             Some(Arc::clone(&cancel_token)),
         )
@@ -138,6 +146,10 @@ pub async fn download_video(
         stream_directly()
             .await
             .map(|bytes| (target_path.clone(), bytes))
+    } else if allows_direct_stream(&validated.platform) {
+        Err(CommandError::DownloadFailed(
+            "yt-dlp est requis pour choisir une qualité ou extraire l'audio, mais il est introuvable sur le système.".to_string(),
+        ))
     } else {
         Err(CommandError::DownloadFailed(format!(
             "yt-dlp est requis pour télécharger depuis {}, mais il est introuvable sur le système.",
@@ -152,7 +164,7 @@ pub async fn download_video(
     let title = file_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| format!("Vidéo ({})", format));
+        .unwrap_or_else(|| format!("Vidéo ({})", quality.id()));
 
     Ok(DownloadResult {
         download_id,

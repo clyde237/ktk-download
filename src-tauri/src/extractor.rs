@@ -13,6 +13,7 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::error::CommandError;
 use crate::models::{DownloadProgressPayload, DownloadStatus, VideoFormat, VideoMetadata};
+use crate::quality::{self, QualityPreset};
 
 /// Fréquence maximale de vérification du jeton d'annulation pendant un téléchargement yt-dlp.
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
@@ -153,63 +154,11 @@ async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata
         raw_extractor.to_string()
     };
 
-    let mut formats = Vec::new();
-
-    // Format "Meilleure qualité (Auto)" par défaut
-    formats.push(VideoFormat {
-        format_id: "best".to_string(),
-        label: "Meilleure qualité disponible (Auto)".to_string(),
-        resolution: Some("Auto".to_string()),
-        extension: "mp4".to_string(),
-        file_size_bytes: None,
-        has_video: true,
-        has_audio: true,
-        direct_url: None,
-    });
-
-    // Formats additionnels si présents dans le JSON
-    if let Some(raw_formats) = parsed["formats"].as_array() {
-        let mut added_resolutions = std::collections::HashSet::new();
-
-        for f in raw_formats.iter().rev() {
-            let has_video = f["vcodec"].as_str().map(|v| v != "none").unwrap_or(false);
-            let has_audio = f["acodec"].as_str().map(|a| a != "none").unwrap_or(false);
-
-            if has_video && has_audio {
-                let height = f["height"].as_u64().unwrap_or(0);
-                if height >= 360 && added_resolutions.insert(height) {
-                    let fmt_id = f["format_id"].as_str().unwrap_or("").to_string();
-                    let ext = f["ext"].as_str().unwrap_or("mp4").to_string();
-                    let direct = f["url"].as_str().map(|s| s.to_string());
-
-                    formats.push(VideoFormat {
-                        format_id: fmt_id,
-                        label: format!("{}p", height),
-                        resolution: Some(format!("{}p", height)),
-                        extension: ext,
-                        file_size_bytes: f["filesize"]
-                            .as_u64()
-                            .or_else(|| f["filesize_approx"].as_u64()),
-                        has_video: true,
-                        has_audio: true,
-                        direct_url: direct,
-                    });
-                }
-            }
-        }
-    }
-
-    // Format audio uniquement
-    formats.push(VideoFormat {
-        format_id: "audio_only".to_string(),
-        label: "Audio uniquement (MP3)".to_string(),
-        resolution: None,
-        extension: "mp3".to_string(),
-        file_size_bytes: None,
-        has_video: false,
-        has_audio: true,
-        direct_url: None,
-    });
+    // Certains extracteurs décrivent un format unique à la racine du JSON, sans liste `formats`.
+    let formats = match parsed["formats"].as_array() {
+        Some(raw_formats) => quality::quality_options(raw_formats),
+        None => quality::quality_options(std::slice::from_ref(&parsed)),
+    };
 
     Ok(VideoMetadata {
         id,
@@ -314,28 +263,17 @@ fn web_stream_metadata(
     stream_url: &str,
     file_size_bytes: Option<u64>,
 ) -> VideoMetadata {
-    let formats = vec![
-        VideoFormat {
-            format_id: "best".to_string(),
-            label: "Flux original (Meilleure qualité)".to_string(),
-            resolution: Some("Auto".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes,
-            has_video: true,
-            has_audio: true,
-            direct_url: Some(stream_url.to_string()),
-        },
-        VideoFormat {
-            format_id: "audio_only".to_string(),
-            label: "Audio uniquement (MP3)".to_string(),
-            resolution: None,
-            extension: "mp3".to_string(),
-            file_size_bytes: None,
-            has_video: false,
-            has_audio: true,
-            direct_url: Some(stream_url.to_string()),
-        },
-    ];
+    // Sans yt-dlp, le fichier est enregistré tel quel : ni choix de qualité ni conversion MP3.
+    let formats = vec![VideoFormat {
+        format_id: QualityPreset::Best.id().to_string(),
+        label: "Fichier original".to_string(),
+        resolution: None,
+        extension: "mp4".to_string(),
+        file_size_bytes,
+        has_video: true,
+        has_audio: true,
+        direct_url: Some(stream_url.to_string()),
+    }];
 
     VideoMetadata {
         id: uuid::Uuid::new_v4().to_string(),
@@ -358,7 +296,7 @@ pub async fn download_with_ytdlp<R: Runtime>(
     app: &AppHandle<R>,
     download_id: &str,
     url: &str,
-    format_id: Option<&str>,
+    quality: QualityPreset,
     target_path: &Path,
     cancel_token: Option<Arc<AtomicBool>>,
 ) -> Result<(PathBuf, u64), CommandError> {
@@ -376,10 +314,14 @@ pub async fn download_with_ytdlp<R: Runtime>(
         .map_err(|e| CommandError::FileSystemError(e.to_string()))?;
 
     let ffmpeg_bin = find_ffmpeg_binary();
-    let format = format_id.filter(|f| !f.is_empty()).unwrap_or("best");
+    if quality.is_audio_only() && ffmpeg_bin.is_none() {
+        return Err(CommandError::DownloadFailed(
+            "La conversion en MP3 nécessite ffmpeg, introuvable sur le système. Installez ffmpeg puis réessayez.".to_string(),
+        ));
+    }
     // Sans ffmpeg, yt-dlp télécharge audio et vidéo séparément sans pouvoir les fusionner :
     // on exige alors un format unique contenant déjà les deux flux.
-    let requires_single_file = format == "best" && ffmpeg_bin.is_none();
+    let requires_single_file = !quality.is_audio_only() && ffmpeg_bin.is_none();
 
     let mut cmd = ytdlp_command(&ytdlp_bin);
     cmd.arg("--newline")
@@ -398,13 +340,7 @@ pub async fn download_with_ytdlp<R: Runtime>(
         cmd.arg("--ffmpeg-location").arg(ffmpeg);
     }
 
-    if format == "audio_only" {
-        cmd.arg("-x").arg("--audio-format").arg("mp3");
-    } else if requires_single_file {
-        cmd.arg("-f").arg("b");
-    } else if format != "best" {
-        cmd.arg("-f").arg(format);
-    }
+    cmd.args(quality.ytdlp_args(ffmpeg_bin.is_some()));
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 

@@ -1,6 +1,7 @@
 <script lang="ts">
   import DestinationPicker from '$lib/components/DestinationPicker.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
+  import QualitySelector from '$lib/components/QualitySelector.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
   import { untrack } from 'svelte';
   import { destination } from '$lib/stores/destination.svelte';
@@ -10,6 +11,8 @@
   import { formatDuration, formatErrorMessage } from '$lib/utils/format';
 
   let inspectedVideo = $state<VideoMetadata | null>(null);
+  // Qualité choisie, conservée d'une vidéo à l'autre quand elle reste disponible.
+  let selectedQuality = $state('best');
   let currentError = $state<CommandError | null>(null);
 
   // Un seul téléchargement à la fois tant que la file d'attente (phase 4) n'existe pas.
@@ -47,11 +50,10 @@
 
     const outputDir = destination.selected ?? undefined;
     try {
-      activeDownloadId = await downloads.start(
-        inspectedVideo.source_url,
-        inspectedVideo.title,
-        outputDir
-      );
+      activeDownloadId = await downloads.start(inspectedVideo.source_url, inspectedVideo.title, {
+        outputDir,
+        formatId: selectedQuality
+      });
       if (outputDir) {
         destination.remember(outputDir);
       }
@@ -100,6 +102,10 @@
 
   function handleInspect(metadata: VideoMetadata) {
     inspectedVideo = metadata;
+    const available = metadata.available_formats.map((f) => f.format_id);
+    if (!available.includes(selectedQuality)) {
+      selectedQuality = available[0] ?? 'best';
+    }
     currentError = null;
   }
 
@@ -156,45 +162,47 @@
             {#if inspectedVideo.author}
               <p class="video-author">{inspectedVideo.author}</p>
             {/if}
-
-            {#if inspectedVideo.available_formats.length > 0}
-              <span class="formats-count">
-                {inspectedVideo.available_formats.length} format{inspectedVideo.available_formats
-                  .length > 1
-                  ? 's'
-                  : ''}
-              </span>
-            {/if}
           </div>
         </div>
 
-        <!-- Sortie : où enregistrer, puis lancer la capture -->
+        <!-- Réglages de sortie : qualité, dossier, puis lancement de la capture -->
         <div class="video-footer">
-          <DestinationPicker disabled={isDownloading} />
+          {#if inspectedVideo.available_formats.length > 1}
+            <QualitySelector
+              options={inspectedVideo.available_formats}
+              value={selectedQuality}
+              onChange={(formatId) => (selectedQuality = formatId)}
+              disabled={isDownloading}
+            />
+          {/if}
 
-          <button
-            type="button"
-            class="download-btn"
-            onclick={handleDownload}
-            disabled={isDownloading}
-          >
-            <svg
-              width="16"
-              height="16"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2.2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              aria-hidden="true"
+          <div class="output-row">
+            <DestinationPicker disabled={isDownloading} />
+
+            <button
+              type="button"
+              class="download-btn"
+              onclick={handleDownload}
+              disabled={isDownloading}
             >
-              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-              <polyline points="7 10 12 15 17 10" />
-              <line x1="12" y1="15" x2="12" y2="3" />
-            </svg>
-            <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
-          </button>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
+            </button>
+          </div>
         </div>
 
         {#if downloadStartError}
@@ -369,8 +377,8 @@
 
   .video-footer {
     display: flex;
-    align-items: flex-end;
-    gap: var(--space-3);
+    flex-direction: column;
+    gap: var(--space-4);
     padding: var(--space-3) var(--space-4) var(--space-4);
     border-top: 1px solid var(--color-border);
     background-color: var(--color-surface-sunken);
@@ -441,12 +449,10 @@
     color: var(--color-text-muted);
   }
 
-  .formats-count {
-    margin-top: auto;
-    padding-top: var(--space-2);
-    font-family: var(--font-mono);
-    font-size: var(--text-xs);
-    color: var(--color-text-muted);
+  .output-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3);
   }
 
   .download-btn {
@@ -567,7 +573,7 @@
       flex-direction: column;
     }
 
-    .video-footer {
+    .output-row {
       flex-direction: column;
       align-items: stretch;
     }
