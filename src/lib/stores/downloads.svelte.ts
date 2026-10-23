@@ -89,12 +89,13 @@ class DownloadStore {
    * Lance un téléchargement et renvoie immédiatement son identifiant.
    * L'écoute des événements est active avant l'appel IPC pour ne manquer aucune progression.
    * Sans `outputDir`, le backend utilise le dossier Téléchargements du système ; sans
-   * `formatId`, la meilleure qualité disponible.
+   * `formatId`, la meilleure qualité disponible. `fileName` (le titre de la vidéo) est assaini
+   * et rendu unique par le backend ; sans lui, le fichier est nommé `video_<identifiant>`.
    */
   async start(
     url: string,
     title: string,
-    options: { outputDir?: string; formatId?: string } = {}
+    options: { outputDir?: string; formatId?: string; fileName?: string } = {}
   ): Promise<string> {
     await this.#ensureListening();
 
@@ -113,7 +114,8 @@ class DownloadStore {
       url,
       download_id: id,
       output_dir: options.outputDir,
-      format_id: options.formatId
+      format_id: options.formatId,
+      custom_filename: options.fileName
     };
 
     invoke<DownloadResult>('download_video', { request })

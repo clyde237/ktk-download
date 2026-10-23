@@ -52,7 +52,8 @@
     try {
       activeDownloadId = await downloads.start(inspectedVideo.source_url, inspectedVideo.title, {
         outputDir,
-        formatId: selectedQuality
+        formatId: selectedQuality,
+        fileName: inspectedVideo.title
       });
       if (outputDir) {
         destination.remember(outputDir);

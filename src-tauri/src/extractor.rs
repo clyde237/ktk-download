@@ -11,6 +11,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
+use crate::downloader::KNOWN_MEDIA_EXTENSIONS;
 use crate::error::CommandError;
 use crate::models::{DownloadProgressPayload, DownloadStatus, VideoFormat, VideoMetadata};
 use crate::quality::{self, QualityPreset};
@@ -476,9 +477,6 @@ const FINAL_PATH_PREFIX: &str = "ktk-file:";
 /// Nombre de lignes de stderr conservées pour expliquer un échec.
 const STDERR_TAIL_LINES: usize = 50;
 
-/// Extensions ajoutées par `resolve_output_path` et remplacées par celle choisie par yt-dlp.
-const KNOWN_MEDIA_EXTENSIONS: &[&str] = &["mp4", "mp3", "m4a", "webm", "mkv", "mov"];
-
 /// Emplacement de sortie yt-dlp dérivé du chemin cible : même dossier et même nom de base,
 /// extension laissée à yt-dlp (`%(ext)s`), seul à connaître le conteneur réellement produit.
 struct YtdlpOutput {
@@ -550,19 +548,20 @@ fn is_ytdlp_intermediate_file(file_name: &str, base_name: &str) -> bool {
         return true;
     }
 
-    // Flux séparé : `f<id>.<ext>` (ex. `f251.webm`, `f251-drc.webm`)
-    match rest.split_once('.') {
-        Some((format_part, ext)) => {
-            format_part.len() > 1
-                && format_part.starts_with('f')
-                && format_part[1..]
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-                && !ext.is_empty()
-                && !ext.contains('.')
-        }
-        None => false,
-    }
+    // Flux séparé : `f<numéro>[-variante].<ext>` (ex. `f251.webm`, `f251-drc.webm`). Le numéro
+    // est exigé : le nom de base vient d'un titre, et « Titre.final.mp4 » doit rester intact.
+    let Some((format_part, ext)) = rest.split_once('.') else {
+        return false;
+    };
+    let Some(format_id) = format_part.strip_prefix('f') else {
+        return false;
+    };
+    let (number, variant) = format_id.split_once('-').unwrap_or((format_id, ""));
+    !number.is_empty()
+        && number.chars().all(|c| c.is_ascii_digit())
+        && variant.chars().all(|c| c.is_ascii_alphanumeric())
+        && !ext.is_empty()
+        && !ext.contains('.')
 }
 
 /// Lit stderr jusqu'à sa fermeture en ne gardant que les dernières lignes.
@@ -808,6 +807,10 @@ mod tests {
         // Fichiers finalisés ou appartenant à un autre téléchargement : jamais supprimés
         assert!(!is_ytdlp_intermediate_file("video_ab12cd34.mp4", base));
         assert!(!is_ytdlp_intermediate_file("video_ab12cd34.webm", base));
+        assert!(!is_ytdlp_intermediate_file(
+            "video_ab12cd34.final.mp4",
+            base
+        ));
         assert!(!is_ytdlp_intermediate_file("video_ffffffff.mp4.part", base));
         assert!(!is_ytdlp_intermediate_file(
             "video_ab12cd345.mp4.part",

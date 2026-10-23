@@ -51,10 +51,25 @@ impl DownloadRegistry {
     }
 }
 
+/// Extensions des fichiers média produits ou reconnus par l'application.
+pub const KNOWN_MEDIA_EXTENSIONS: &[&str] = &["mp4", "mp3", "m4a", "webm", "mkv", "mov"];
+
+/// Taille maximale du nom de base, en octets : laisse la place aux suffixes de yt-dlp
+/// (`.f251-drc.webm.part`) sous la limite de 255 octets des systèmes de fichiers courants.
+const MAX_FILE_STEM_BYTES: usize = 150;
+
+/// Noms réservés par Windows, interdits comme nom de fichier quelle que soit l'extension.
+const WINDOWS_RESERVED_NAMES: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
 /// Résout et sécurise le chemin de destination pour l'enregistrement d'un fichier téléchargé.
 ///
-/// Assainit le nom du fichier pour prévenir toute attaque par traversée de répertoire (path traversal)
-/// et utilise le dossier standard `Downloads` du système en l'absence de répertoire spécifié.
+/// Le nom demandé (en pratique le titre de la vidéo) est assaini pour être valide sur tous les
+/// systèmes et ne permettre aucune traversée de répertoire. Un fichier existant n'est jamais
+/// écrasé ni réutilisé : le nom reçoit un suffixe « (2) », « (3) »… Sans nom exploitable,
+/// `video_<identifiant>` est utilisé. Sans dossier, le dossier `Downloads` du système.
 pub fn resolve_output_path(
     output_dir: Option<&str>,
     custom_filename: Option<&str>,
@@ -67,36 +82,97 @@ pub fn resolve_output_path(
         dirs::download_dir().unwrap_or_else(|| PathBuf::from("Downloads"))
     };
 
-    let raw_name = if let Some(name) = custom_filename {
-        name.trim()
-    } else {
-        ""
-    };
+    let (stem, extension) = custom_filename
+        .map(sanitize_file_name)
+        .and_then(|name| split_file_name(&name, default_extension))
+        .unwrap_or_else(|| {
+            (
+                format!("video_{}", fallback_id),
+                default_extension.to_string(),
+            )
+        });
 
-    let filename = if raw_name.is_empty() {
-        format!("video_{}.{}", fallback_id, default_extension)
-    } else {
-        // Assainissement des caractères dangereux pour le système de fichiers
-        let sanitized: String = raw_name
-            .chars()
-            .map(|c| match c {
-                '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
-                other => other,
-            })
-            .collect();
+    unique_output_path(&base_dir, &stem, &extension, fallback_id)
+}
 
-        // Empêcher les tentatives de traversée de chemin
-        let safe_name = sanitized.trim_matches('.').trim();
-        if safe_name.is_empty() {
-            format!("video_{}.{}", fallback_id, default_extension)
-        } else if !safe_name.contains('.') {
-            format!("{}.{}", safe_name, default_extension)
-        } else {
-            safe_name.to_string()
+/// Remplace les caractères interdits par les systèmes de fichiers et normalise les espaces.
+fn sanitize_file_name(raw: &str) -> String {
+    let replaced: String = raw
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' => '_',
+            c if c.is_control() => ' ',
+            other => other,
+        })
+        .collect();
+    replaced.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Sépare nom de base et extension. Une extension média connue est conservée ; sinon le nom
+/// complet sert de base (un titre peut contenir des points) et l'extension par défaut s'ajoute.
+fn split_file_name(name: &str, default_extension: &str) -> Option<(String, String)> {
+    let (stem, extension) = match name.rsplit_once('.') {
+        Some((stem, ext))
+            if KNOWN_MEDIA_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()) =>
+        {
+            (stem, ext.to_ascii_lowercase())
         }
+        _ => (name, default_extension.to_string()),
     };
 
-    base_dir.join(filename)
+    // Points et espaces en bord de nom : fichier caché sous Unix, nom invalide sous Windows,
+    // et « .. » ne doit jamais subsister.
+    let is_edge = |c: char| c == '.' || c == ' ';
+    let stem = truncate_to_bytes(stem.trim_matches(is_edge), MAX_FILE_STEM_BYTES)
+        .trim_end_matches(is_edge);
+    if stem.is_empty() {
+        return None;
+    }
+
+    let base_name = stem.split('.').next().unwrap_or(stem).to_ascii_uppercase();
+    let stem = if WINDOWS_RESERVED_NAMES.contains(&base_name.as_str()) {
+        format!("_{}", stem)
+    } else {
+        stem.to_string()
+    };
+    Some((stem, extension))
+}
+
+fn truncate_to_bytes(text: &str, max_bytes: usize) -> &str {
+    let mut end = text.len().min(max_bytes);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
+/// Choisit le premier nom libre : « Titre », « Titre (2) », « Titre (3) »…
+///
+/// yt-dlp choisit lui-même l'extension finale : un nom est pris dès qu'un fichier média connu
+/// (ou son fichier `.part`) porte ce nom de base.
+fn unique_output_path(dir: &Path, stem: &str, extension: &str, fallback_id: &str) -> PathBuf {
+    let is_taken = |candidate: &str| {
+        KNOWN_MEDIA_EXTENSIONS
+            .iter()
+            .copied()
+            .chain(std::iter::once(extension))
+            .any(|ext| {
+                dir.join(format!("{}.{}", candidate, ext)).exists()
+                    || dir.join(format!("{}.{}.part", candidate, ext)).exists()
+            })
+    };
+
+    (1..=99)
+        .map(|n| {
+            if n == 1 {
+                stem.to_string()
+            } else {
+                format!("{} ({})", stem, n)
+            }
+        })
+        .find(|candidate| !is_taken(candidate))
+        .map(|candidate| dir.join(format!("{}.{}", candidate, extension)))
+        .unwrap_or_else(|| dir.join(format!("{} ({}).{}", stem, fallback_id, extension)))
 }
 
 /// Pipeline de streaming asynchrone haute performance avec écriture disque non-bloquante et émission IPC.
@@ -393,6 +469,89 @@ mod tests {
         let path = resolve_output_path(Some("/tmp"), None, "abcdef12", "mp4");
         let filename = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(filename, "video_abcdef12.mp4");
+    }
+
+    #[test]
+    fn test_resolve_output_path_keeps_dotted_titles() {
+        let path = resolve_output_path(
+            Some("/tmp/ktk-inexistant"),
+            Some("Mr. Bean: The Movie"),
+            "abcdef12",
+            "mp4",
+        );
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "Mr. Bean_ The Movie.mp4"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_rejects_traversal_and_reserved_names() {
+        let traversal = resolve_output_path(
+            Some("/tmp/ktk-inexistant"),
+            Some("../../etc/passwd"),
+            "abcdef12",
+            "mp4",
+        );
+        assert_eq!(
+            traversal.parent().unwrap(),
+            Path::new("/tmp/ktk-inexistant")
+        );
+        assert_eq!(
+            traversal.file_name().unwrap().to_str().unwrap(),
+            "_.._etc_passwd.mp4"
+        );
+
+        let reserved =
+            resolve_output_path(Some("/tmp/ktk-inexistant"), Some("con"), "abcdef12", "mp4");
+        assert_eq!(reserved.file_name().unwrap().to_str().unwrap(), "_con.mp4");
+
+        let only_dots =
+            resolve_output_path(Some("/tmp/ktk-inexistant"), Some(" .. "), "abcdef12", "mp4");
+        assert_eq!(
+            only_dots.file_name().unwrap().to_str().unwrap(),
+            "video_abcdef12.mp4"
+        );
+    }
+
+    #[test]
+    fn test_resolve_output_path_normalizes_whitespace_and_length() {
+        let path = resolve_output_path(
+            Some("/tmp/ktk-inexistant"),
+            Some("Clip\n\tfinal   cut"),
+            "abcdef12",
+            "mp4",
+        );
+        assert_eq!(
+            path.file_name().unwrap().to_str().unwrap(),
+            "Clip final cut.mp4"
+        );
+
+        // Titre multi-octets très long : coupé sur une frontière de caractère
+        let long_title = "動画".repeat(200);
+        let path = resolve_output_path(
+            Some("/tmp/ktk-inexistant"),
+            Some(&long_title),
+            "abcdef12",
+            "mp4",
+        );
+        let stem = path.file_stem().unwrap().to_str().unwrap();
+        assert!(stem.len() <= MAX_FILE_STEM_BYTES);
+        assert!(stem.chars().all(|c| c == '動' || c == '画'));
+    }
+
+    #[test]
+    fn test_resolve_output_path_never_reuses_existing_file() {
+        let dir = std::env::temp_dir().join("ktk-unique-name-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        // yt-dlp a déjà produit « Clip.webm » : un nouveau « Clip » ne doit pas le réutiliser
+        std::fs::write(dir.join("Clip.webm"), b"").unwrap();
+        std::fs::write(dir.join("Clip (2).mp4.part"), b"").unwrap();
+
+        let path = resolve_output_path(dir.to_str(), Some("Clip"), "abcdef12", "mp4");
+        assert_eq!(path.file_name().unwrap().to_str().unwrap(), "Clip (3).mp4");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
