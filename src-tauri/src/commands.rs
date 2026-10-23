@@ -63,6 +63,7 @@ pub async fn download_video(
     request: DownloadRequest,
 ) -> Result<DownloadResult, CommandError> {
     let validated = validator::validate_and_sanitize_url(&request.url)?;
+    let output_dir = validate_output_dir(request.output_dir.as_deref())?;
 
     let download_id = resolve_download_id(request.download_id.as_deref())?;
     if registry.is_active(&download_id) {
@@ -90,7 +91,7 @@ pub async fn download_video(
 
     // Résolution du chemin de sortie sécurisé
     let target_path = downloader::resolve_output_path(
-        request.output_dir.as_deref(),
+        output_dir.as_deref(),
         request.custom_filename.as_deref(),
         &download_id[..8],
         extension,
@@ -168,6 +169,31 @@ fn allows_direct_stream(platform: &VideoPlatform) -> bool {
     matches!(platform, VideoPlatform::GenericWeb(_))
 }
 
+/// Vérifie le dossier de destination choisi dans l'interface avant toute écriture.
+///
+/// Le chemin vient du frontend : il doit être absolu et désigner un dossier existant. Aucun dossier
+/// n'est créé à partir de cette valeur ; `None` (ou une chaîne vide) garde le dossier par défaut.
+fn validate_output_dir(requested: Option<&str>) -> Result<Option<String>, CommandError> {
+    let Some(raw) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return Err(CommandError::FileSystemError(
+            "Le dossier de destination doit être un chemin absolu.".to_string(),
+        ));
+    }
+    if !path.is_dir() {
+        return Err(CommandError::FileSystemError(format!(
+            "Le dossier de destination est introuvable : {}",
+            raw
+        )));
+    }
+
+    Ok(Some(raw.to_string()))
+}
+
 /// Valide l'identifiant fourni par le frontend (UUID) ou en génère un nouveau.
 ///
 /// L'identifiant est renvoyé sous forme canonique (minuscules avec tirets), identique à celle
@@ -194,6 +220,35 @@ mod tests {
         )));
         assert!(!allows_direct_stream(&VideoPlatform::YouTube));
         assert!(!allows_direct_stream(&VideoPlatform::Vimeo));
+    }
+
+    #[test]
+    fn test_validate_output_dir_defaults_when_empty() {
+        assert_eq!(validate_output_dir(None).unwrap(), None);
+        assert_eq!(validate_output_dir(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_output_dir_accepts_existing_absolute_dir() {
+        let dir = std::env::temp_dir();
+        let dir_str = dir.to_str().unwrap();
+        assert_eq!(
+            validate_output_dir(Some(dir_str)).unwrap(),
+            Some(dir_str.to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_output_dir_rejects_relative_and_missing() {
+        assert!(matches!(
+            validate_output_dir(Some("../Videos")),
+            Err(CommandError::FileSystemError(_))
+        ));
+        let missing = std::env::temp_dir().join("ktk-download-dossier-inexistant-7f3a");
+        assert!(matches!(
+            validate_output_dir(missing.to_str()),
+            Err(CommandError::FileSystemError(_))
+        ));
     }
 
     #[test]

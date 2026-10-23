@@ -88,8 +88,9 @@ class DownloadStore {
   /**
    * Lance un téléchargement et renvoie immédiatement son identifiant.
    * L'écoute des événements est active avant l'appel IPC pour ne manquer aucune progression.
+   * Sans `outputDir`, le backend utilise le dossier Téléchargements du système.
    */
-  async start(url: string, title: string): Promise<string> {
+  async start(url: string, title: string, outputDir?: string): Promise<string> {
     await this.#ensureListening();
 
     const id = crypto.randomUUID();
@@ -103,7 +104,7 @@ class DownloadStore {
       cancelRequested: false
     };
 
-    const request: DownloadRequest = { url, download_id: id };
+    const request: DownloadRequest = { url, download_id: id, output_dir: outputDir };
 
     invoke<DownloadResult>('download_video', { request })
       .then((result) => {

@@ -1,6 +1,8 @@
 <script lang="ts">
+  import DestinationPicker from '$lib/components/DestinationPicker.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
+  import { destination } from '$lib/stores/destination.svelte';
   import { downloads, isTerminalStatus } from '$lib/stores/downloads.svelte';
   import type { CommandError, VideoMetadata } from '$lib/types/download';
   import { formatDuration, formatErrorMessage } from '$lib/utils/format';
@@ -29,8 +31,16 @@
       downloads.dismiss(activeDownloadId);
     }
 
+    const outputDir = destination.selected ?? undefined;
     try {
-      activeDownloadId = await downloads.start(inspectedVideo.source_url, inspectedVideo.title);
+      activeDownloadId = await downloads.start(
+        inspectedVideo.source_url,
+        inspectedVideo.title,
+        outputDir
+      );
+      if (outputDir) {
+        destination.remember(outputDir);
+      }
     } catch (err: unknown) {
       activeDownloadId = null;
       downloadStartError = formatErrorMessage(err);
@@ -114,25 +124,25 @@
 
     {#if inspectedVideo}
       <section class="panel video-card" aria-label="Vidéo analysée">
-        {#if inspectedVideo.thumbnail_url}
-          <div class="thumbnail">
-            <img src={inspectedVideo.thumbnail_url} alt="" loading="lazy" />
-            {#if inspectedVideo.duration_seconds}
-              <span class="duration">{formatDuration(inspectedVideo.duration_seconds)}</span>
-            {/if}
-          </div>
-        {/if}
-
-        <div class="video-details">
-          <p class="source-tag">{inspectedVideo.source_platform}</p>
-
-          <h2 class="video-title" title={inspectedVideo.title}>{inspectedVideo.title}</h2>
-
-          {#if inspectedVideo.author}
-            <p class="video-author">{inspectedVideo.author}</p>
+        <div class="video-main">
+          {#if inspectedVideo.thumbnail_url}
+            <div class="thumbnail">
+              <img src={inspectedVideo.thumbnail_url} alt="" loading="lazy" />
+              {#if inspectedVideo.duration_seconds}
+                <span class="duration">{formatDuration(inspectedVideo.duration_seconds)}</span>
+              {/if}
+            </div>
           {/if}
 
-          <div class="video-actions">
+          <div class="video-details">
+            <p class="source-tag">{inspectedVideo.source_platform}</p>
+
+            <h2 class="video-title" title={inspectedVideo.title}>{inspectedVideo.title}</h2>
+
+            {#if inspectedVideo.author}
+              <p class="video-author">{inspectedVideo.author}</p>
+            {/if}
+
             {#if inspectedVideo.available_formats.length > 0}
               <span class="formats-count">
                 {inspectedVideo.available_formats.length} format{inspectedVideo.available_formats
@@ -141,36 +151,41 @@
                   : ''}
               </span>
             {/if}
-
-            <button
-              type="button"
-              class="download-btn"
-              onclick={handleDownload}
-              disabled={isDownloading}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                stroke-width="2.2"
-                stroke-linecap="round"
-                stroke-linejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="7 10 12 15 17 10" />
-                <line x1="12" y1="15" x2="12" y2="3" />
-              </svg>
-              <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
-            </button>
           </div>
-
-          {#if downloadStartError}
-            <p class="download-start-error" role="alert">{downloadStartError}</p>
-          {/if}
         </div>
+
+        <!-- Sortie : où enregistrer, puis lancer la capture -->
+        <div class="video-footer">
+          <DestinationPicker disabled={isDownloading} />
+
+          <button
+            type="button"
+            class="download-btn"
+            onclick={handleDownload}
+            disabled={isDownloading}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
+          </button>
+        </div>
+
+        {#if downloadStartError}
+          <p class="download-start-error" role="alert">{downloadStartError}</p>
+        {/if}
       </section>
     {:else if !currentError && !activeDownload}
       <section class="panel sources" aria-labelledby="sources-heading">
@@ -329,8 +344,23 @@
   /* Vidéo analysée */
   .video-card {
     display: flex;
+    flex-direction: column;
+  }
+
+  .video-main {
+    display: flex;
     gap: var(--space-5);
     padding: var(--space-4);
+  }
+
+  .video-footer {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    border-top: 1px solid var(--color-border);
+    background-color: var(--color-surface-sunken);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   }
 
   .thumbnail {
@@ -397,17 +427,9 @@
     color: var(--color-text-muted);
   }
 
-  .video-actions {
-    margin-top: auto;
-    padding-top: var(--space-3);
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: var(--space-3);
-  }
-
   .formats-count {
+    margin-top: auto;
+    padding-top: var(--space-2);
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
@@ -417,7 +439,7 @@
     display: inline-flex;
     align-items: center;
     gap: var(--space-2);
-    margin-left: auto;
+    min-height: 36px;
     padding: var(--space-2) var(--space-4);
     border-radius: var(--radius-md);
     background-color: var(--color-accent-strong);
@@ -440,6 +462,9 @@
   }
 
   .download-start-error {
+    padding: 0 var(--space-4) var(--space-4);
+    background-color: var(--color-surface-sunken);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
     font-size: var(--text-sm);
     color: var(--color-danger);
   }
@@ -524,8 +549,13 @@
       padding: var(--space-6) var(--space-4) var(--space-10);
     }
 
-    .video-card {
+    .video-main {
       flex-direction: column;
+    }
+
+    .video-footer {
+      flex-direction: column;
+      align-items: stretch;
     }
 
     .thumbnail {
