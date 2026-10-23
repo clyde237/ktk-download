@@ -23,7 +23,6 @@ const TRACKING_PARAMS: &[&str] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VideoPlatform {
     YouTube,
-    MoviBox,
     Vimeo,
     Dailymotion,
     TikTok,
@@ -36,7 +35,6 @@ impl VideoPlatform {
     pub fn as_str(&self) -> &str {
         match self {
             VideoPlatform::YouTube => "YouTube",
-            VideoPlatform::MoviBox => "MoviBox",
             VideoPlatform::Vimeo => "Vimeo",
             VideoPlatform::Dailymotion => "Dailymotion",
             VideoPlatform::TikTok => "TikTok",
@@ -154,8 +152,6 @@ fn detect_platform(host: &str) -> VideoPlatform {
         || host == "youtube-nocookie.com"
     {
         VideoPlatform::YouTube
-    } else if host == "movibox.net" || host.ends_with(".movibox.net") || host.contains("movibox") {
-        VideoPlatform::MoviBox
     } else if host == "vimeo.com" || host.ends_with(".vimeo.com") {
         VideoPlatform::Vimeo
     } else if host == "dailymotion.com" || host.ends_with(".dailymotion.com") || host == "dai.ly" {
@@ -290,9 +286,12 @@ mod tests {
 
     #[test]
     fn test_tracking_params_removal() {
-        let validated = validate_and_sanitize_url("https://movibox.net/watch/12345?utm_source=newsletter&utm_medium=email&fbclid=XYZ&quality=hd")
+        let validated = validate_and_sanitize_url("https://cdn.example.org/watch/12345?utm_source=newsletter&utm_medium=email&fbclid=XYZ&quality=hd")
             .expect("Validation réussie");
-        assert_eq!(validated.platform, VideoPlatform::MoviBox);
+        assert_eq!(
+            validated.platform,
+            VideoPlatform::GenericWeb("cdn.example.org".to_string())
+        );
         assert!(validated.canonical_url.contains("quality=hd"));
         assert!(!validated.canonical_url.contains("utm_source"));
         assert!(!validated.canonical_url.contains("fbclid"));

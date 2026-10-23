@@ -1,13 +1,21 @@
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use regex::Regex;
+use reqwest::header::CONTENT_TYPE;
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
 use crate::error::CommandError;
 use crate::models::{DownloadProgressPayload, DownloadStatus, VideoFormat, VideoMetadata};
+
+/// Fréquence maximale de vérification du jeton d'annulation pendant un téléchargement yt-dlp.
+const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Localise le binaire `yt-dlp` sur le système hôte.
 ///
@@ -57,8 +65,15 @@ pub fn find_ytdlp_binary() -> Option<PathBuf> {
     None
 }
 
-/// Extrait les métadonnées d'une vidéo en utilisant `yt-dlp` ou par inspection HTML de secours (ex: MoviBox).
-pub async fn extract_metadata(url: &str) -> Result<VideoMetadata, CommandError> {
+/// Extrait les métadonnées d'une vidéo avec `yt-dlp`, puis par analyse directe de la page
+/// quand `allow_webpage_scan` l'autorise (fichiers et lecteurs web génériques uniquement).
+///
+/// Aucune métadonnée n'est inventée : si aucune vidéo n'est trouvée, une erreur est renvoyée,
+/// pour ne jamais présenter comme analysée une vidéo impossible à télécharger.
+pub async fn extract_metadata(
+    url: &str,
+    allow_webpage_scan: bool,
+) -> Result<VideoMetadata, CommandError> {
     let parsed_url = url::Url::parse(url)
         .map_err(|e| CommandError::InvalidUrl(format!("Format d'adresse invalide : {}", e)))?;
 
@@ -68,82 +83,34 @@ pub async fn extract_metadata(url: &str) -> Result<VideoMetadata, CommandError> 
         ));
     }
 
-    let host = parsed_url.host_str().unwrap_or("").to_lowercase();
-
-    // 1. Tentative d'extraction avec yt-dlp si présent
-    if let Some(ytdlp_bin) = find_ytdlp_binary()
-        && let Ok(metadata) = extract_with_ytdlp(&ytdlp_bin, url).await
-    {
-        return Ok(metadata);
-    }
-
-    // 2. Extraction de secours : scraping direct pour MoviBox et lecteurs web HTML5/HLS
-    if let Ok(metadata) = extract_from_webpage(url).await {
-        return Ok(metadata);
-    }
-
-    // 3. Détection heuristique de secours (ex: mode hors-ligne ou CDN restreint)
-    let platform = if host.contains("youtube.com") || host.contains("youtu.be") {
-        "YouTube".to_string()
-    } else if host.contains("movibox.net") || host.contains("movibox") {
-        "MoviBox".to_string()
-    } else {
-        "Flux Web / Direct".to_string()
+    // 1. Extraction avec yt-dlp si présent
+    let ytdlp_error = match find_ytdlp_binary() {
+        Some(ytdlp_bin) => match extract_with_ytdlp(&ytdlp_bin, url).await {
+            Ok(metadata) => return Ok(metadata),
+            Err(e) => Some(e),
+        },
+        None => None,
     };
 
-    Ok(fallback_metadata(url, &host, &platform))
-}
-
-fn fallback_metadata(url: &str, host: &str, platform: &str) -> VideoMetadata {
-    let formats = vec![
-        VideoFormat {
-            format_id: "best".to_string(),
-            label: "Meilleure qualité disponible (Auto)".to_string(),
-            resolution: Some("1080p".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "720p".to_string(),
-            label: "720p HD".to_string(),
-            resolution: Some("1280x720".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "audio_only".to_string(),
-            label: "Audio uniquement (MP3)".to_string(),
-            resolution: None,
-            extension: "mp3".to_string(),
-            file_size_bytes: None,
-            has_video: false,
-            has_audio: true,
-            direct_url: None,
-        },
-    ];
-
-    VideoMetadata {
-        id: uuid::Uuid::new_v4().to_string(),
-        title: format!("Vidéo {}", platform),
-        description: Some(format!("Flux analysé depuis {}", host)),
-        author: None,
-        thumbnail_url: None,
-        duration_seconds: None,
-        source_platform: platform.to_string(),
-        source_url: url.to_string(),
-        available_formats: formats,
+    // 2. Analyse directe de la réponse HTTP (fichier média ou lecteur HTML5/HLS)
+    if allow_webpage_scan {
+        return match extract_from_webpage(url).await {
+            Ok(metadata) => Ok(metadata),
+            // Le diagnostic de yt-dlp, quand il existe, est plus précis que celui du scan HTML.
+            Err(e) => Err(ytdlp_error.unwrap_or(e)),
+        };
     }
+
+    Err(ytdlp_error.unwrap_or_else(|| {
+        CommandError::ExtractionFailed(
+            "yt-dlp est requis pour analyser cette plateforme, mais il est introuvable sur le système.".to_string(),
+        )
+    }))
 }
 
 /// Exécute `yt-dlp --dump-single-json` et parse le JSON retourné.
 async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata, CommandError> {
-    let output = tokio::process::Command::new(ytdlp_bin)
+    let output = ytdlp_command(ytdlp_bin)
         .arg("--dump-single-json")
         .arg("--no-warnings")
         .arg("--no-playlist")
@@ -182,8 +149,6 @@ async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata
 
     let extractor_name = if raw_extractor.to_lowercase().contains("youtube") {
         "YouTube".to_string()
-    } else if raw_extractor.to_lowercase().contains("movibox") {
-        "MoviBox".to_string()
     } else {
         raw_extractor.to_string()
     };
@@ -259,18 +224,39 @@ async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata
     })
 }
 
-/// Extraction de secours par analyse directe du code HTML de la page (ex: MoviBox, balises video, HLS .m3u8).
+/// Nom de plateforme des sources web génériques, identique à celui du validateur.
+const GENERIC_WEB_PLATFORM: &str = "Flux Web / Direct";
+
+/// Analyse de secours sans yt-dlp : reconnaît un fichier média servi directement, ou cherche dans
+/// le code HTML de la page un lien vers un flux MP4 ou HLS (.m3u8).
 async fn extract_from_webpage(url: &str) -> Result<VideoMetadata, CommandError> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36")
         .build()
         .map_err(|e| CommandError::NetworkError(e.to_string()))?;
 
-    let html = client
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| CommandError::NetworkError(e.to_string()))?
+    let response = client.get(url).send().await.map_err(CommandError::from)?;
+
+    let status = response.status();
+    if !status.is_success() {
+        return Err(CommandError::from_http_status(status));
+    }
+
+    let content_type = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+
+    // Fichier média servi directement : son contenu n'est jamais chargé en mémoire pour l'analyse.
+    if is_direct_media(&content_type, response.url().path()) {
+        let title = media_title_from_path(response.url().path());
+        let file_size_bytes = response.content_length();
+        return Ok(web_stream_metadata(url, title, url, file_size_bytes));
+    }
+
+    let html = response
         .text()
         .await
         .map_err(|e| CommandError::ExtractionFailed(e.to_string()))?;
@@ -285,27 +271,59 @@ async fn extract_from_webpage(url: &str) -> Result<VideoMetadata, CommandError> 
 
     // Recherche de flux directs MP4 ou HLS (.m3u8)
     let stream_regex = Regex::new(r#"(https?://[^\s"'<>]+\.(?:m3u8|mp4)[^\s"'<>]*)"#).unwrap();
-    let direct_stream_url = stream_regex
+    let Some(direct_stream_url) = stream_regex
         .captures(&html)
         .and_then(|c| c.get(1))
-        .map(|m| m.as_str().to_string());
-
-    let platform = if url.contains("movibox") {
-        "MoviBox".to_string()
-    } else {
-        "Lecteur Web Direct".to_string()
+        .map(|m| m.as_str().to_string())
+    else {
+        return Err(CommandError::ExtractionFailed(
+            "Aucune vidéo téléchargeable n'a été détectée sur cette page.".to_string(),
+        ));
     };
 
+    Ok(web_stream_metadata(url, title, &direct_stream_url, None))
+}
+
+/// Une réponse est un fichier média si son type l'annonce, ou si un type binaire générique
+/// accompagne une URL à l'extension média connue (cas fréquent des CDN).
+fn is_direct_media(content_type: &str, url_path: &str) -> bool {
+    let mime = content_type.split(';').next().unwrap_or_default().trim();
+    if mime.starts_with("video/") || mime.starts_with("audio/") {
+        return true;
+    }
+
+    let has_media_extension = Path::new(url_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| KNOWN_MEDIA_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+    mime == "application/octet-stream" && has_media_extension
+}
+
+fn media_title_from_path(url_path: &str) -> String {
+    Path::new(url_path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "Vidéo Web".to_string())
+}
+
+fn web_stream_metadata(
+    source_url: &str,
+    title: String,
+    stream_url: &str,
+    file_size_bytes: Option<u64>,
+) -> VideoMetadata {
     let formats = vec![
         VideoFormat {
             format_id: "best".to_string(),
             label: "Flux original (Meilleure qualité)".to_string(),
             resolution: Some("Auto".to_string()),
             extension: "mp4".to_string(),
-            file_size_bytes: None,
+            file_size_bytes,
             has_video: true,
             has_audio: true,
-            direct_url: direct_stream_url.clone(),
+            direct_url: Some(stream_url.to_string()),
         },
         VideoFormat {
             format_id: "audio_only".to_string(),
@@ -315,57 +333,77 @@ async fn extract_from_webpage(url: &str) -> Result<VideoMetadata, CommandError> 
             file_size_bytes: None,
             has_video: false,
             has_audio: true,
-            direct_url: direct_stream_url,
+            direct_url: Some(stream_url.to_string()),
         },
     ];
 
-    Ok(VideoMetadata {
+    VideoMetadata {
         id: uuid::Uuid::new_v4().to_string(),
         title,
-        description: Some(format!("Source analysée depuis {}", platform)),
+        description: Some(format!("Source analysée depuis {}", GENERIC_WEB_PLATFORM)),
         author: None,
         thumbnail_url: None,
         duration_seconds: None,
-        source_platform: platform,
-        source_url: url.to_string(),
+        source_platform: GENERIC_WEB_PLATFORM.to_string(),
+        source_url: source_url.to_string(),
         available_formats: formats,
-    })
+    }
 }
 
 /// Télécharge une vidéo via `yt-dlp` en suivant sa progression ligne par ligne en temps réel.
+///
+/// Renvoie le chemin réel du fichier final et sa taille : yt-dlp choisit lui-même le conteneur
+/// (`.mp4`, `.webm`, `.mkv`…), le nom effectif peut donc différer de `target_path`.
 pub async fn download_with_ytdlp<R: Runtime>(
     app: &AppHandle<R>,
     download_id: &str,
     url: &str,
     format_id: Option<&str>,
     target_path: &Path,
-) -> Result<u64, CommandError> {
+    cancel_token: Option<Arc<AtomicBool>>,
+) -> Result<(PathBuf, u64), CommandError> {
     let ytdlp_bin = find_ytdlp_binary().ok_or_else(|| {
         CommandError::Internal("Le binaire yt-dlp est introuvable sur le système.".to_string())
     })?;
 
-    // Assure la création du dossier parent
-    if let Some(parent) = target_path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .map_err(|e| CommandError::FileSystemError(e.to_string()))?;
-    }
+    let output = YtdlpOutput::for_target(target_path).ok_or_else(|| {
+        CommandError::FileSystemError("Chemin de destination invalide.".to_string())
+    })?;
 
-    let mut cmd = tokio::process::Command::new(&ytdlp_bin);
+    // Assure la création du dossier parent
+    tokio::fs::create_dir_all(&output.dir)
+        .await
+        .map_err(|e| CommandError::FileSystemError(e.to_string()))?;
+
+    let ffmpeg_bin = find_ffmpeg_binary();
+    let format = format_id.filter(|f| !f.is_empty()).unwrap_or("best");
+    // Sans ffmpeg, yt-dlp télécharge audio et vidéo séparément sans pouvoir les fusionner :
+    // on exige alors un format unique contenant déjà les deux flux.
+    let requires_single_file = format == "best" && ffmpeg_bin.is_none();
+
+    let mut cmd = ytdlp_command(&ytdlp_bin);
     cmd.arg("--newline")
+        .arg("--no-playlist")
         .arg("--progress")
         .arg("--progress-template")
         .arg("ktk:%(progress._percent_str)s|%(progress._speed_str)s|%(progress._eta_str)s|%(progress._total_bytes_str)s")
+        .arg("--print")
+        .arg(format!("after_move:{}%(filepath)s", FINAL_PATH_PREFIX))
         .arg("-o")
-        .arg(target_path)
+        .arg(output.template())
         .arg(url);
 
-    if let Some(fmt) = format_id {
-        if fmt == "audio_only" {
-            cmd.arg("-x").arg("--audio-format").arg("mp3");
-        } else if fmt != "best" && !fmt.is_empty() {
-            cmd.arg("-f").arg(fmt);
-        }
+    // Même binaire ffmpeg pour la détection ci-dessus et pour yt-dlp
+    if let Some(ffmpeg) = &ffmpeg_bin {
+        cmd.arg("--ffmpeg-location").arg(ffmpeg);
+    }
+
+    if format == "audio_only" {
+        cmd.arg("-x").arg("--audio-format").arg("mp3");
+    } else if requires_single_file {
+        cmd.arg("-f").arg("b");
+    } else if format != "best" {
+        cmd.arg("-f").arg(format);
     }
 
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -377,11 +415,56 @@ pub async fn download_with_ytdlp<R: Runtime>(
     let stdout = child.stdout.take().ok_or_else(|| {
         CommandError::Internal("Impossible de capturer la sortie standard".to_string())
     })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        CommandError::Internal("Impossible de capturer la sortie d'erreur".to_string())
+    })?;
+
+    // Lecture continue de stderr : un tampon plein bloquerait yt-dlp, et son contenu explique
+    // les échecs à l'utilisateur.
+    let stderr_task = tauri::async_runtime::spawn(collect_stderr_tail(stderr));
 
     let mut reader = BufReader::new(stdout).lines();
+    let mut final_path: Option<PathBuf> = None;
 
-    while let Ok(Some(line)) = reader.next_line().await {
-        if let Some(progress_data) = line.strip_prefix("ktk:") {
+    loop {
+        // yt-dlp peut rester silencieux longtemps (connexion lente, fusion ffmpeg) : le délai
+        // garantit que le jeton d'annulation est relu même sans nouvelle ligne de progression.
+        let line = tokio::select! {
+            next = reader.next_line() => match next {
+                Ok(Some(line)) => Some(line),
+                _ => break,
+            },
+            _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => None,
+        };
+
+        if cancel_token
+            .as_ref()
+            .is_some_and(|token| token.load(Ordering::Relaxed))
+        {
+            let _ = child.kill().await;
+            output.remove_intermediate_files().await;
+
+            let cancel_payload = DownloadProgressPayload {
+                download_id: download_id.to_string(),
+                status: DownloadStatus::Cancelled,
+                progress_percentage: 0.0,
+                downloaded_bytes: 0,
+                total_bytes: None,
+                speed_bytes_per_sec: 0,
+                eta_seconds: None,
+            };
+            let _ = app.emit("download-progress", &cancel_payload);
+
+            return Err(CommandError::DownloadCancelled);
+        }
+
+        let Some(line) = line else {
+            continue;
+        };
+
+        if let Some(path) = line.strip_prefix(FINAL_PATH_PREFIX) {
+            final_path = Some(PathBuf::from(path.trim()));
+        } else if let Some(progress_data) = line.strip_prefix("ktk:") {
             let parts: Vec<&str> = progress_data.split('|').collect();
             if parts.len() >= 4 {
                 let pct = parse_percent_str(parts[0]);
@@ -413,19 +496,29 @@ pub async fn download_with_ytdlp<R: Runtime>(
     let status = child.wait().await.map_err(|e| {
         CommandError::Internal(format!("Erreur lors de l'attente du processus : {}", e))
     })?;
+    let stderr_tail = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
-        return Err(CommandError::DownloadFailed(
-            "Le téléchargement via yt-dlp s'est interrompu anormalement.".to_string(),
-        ));
+        output.remove_intermediate_files().await;
+        return Err(ytdlp_failure_error(&stderr_tail, requires_single_file));
     }
 
-    // Récupération de la taille finale du fichier
-    let metadata = tokio::fs::metadata(target_path)
-        .await
-        .map_err(|e| CommandError::FileSystemError(e.to_string()))?;
+    // yt-dlp peut réussir sans produire de fichier final (flux séparés non fusionnés) :
+    // seul un fichier réellement présent sur le disque compte comme un succès.
+    let final_file = match final_path {
+        Some(path) => match tokio::fs::metadata(&path).await {
+            Ok(metadata) if metadata.is_file() => Some((path, metadata.len())),
+            _ => None,
+        },
+        None => None,
+    };
 
-    let final_bytes = metadata.len();
+    let Some((file_path, final_bytes)) = final_file else {
+        output.remove_intermediate_files().await;
+        return Err(CommandError::DownloadFailed(
+            "yt-dlp n'a produit aucun fichier final : les flux audio et vidéo n'ont pas pu être fusionnés. Installez ffmpeg puis réessayez.".to_string(),
+        ));
+    };
 
     let completed_payload = DownloadProgressPayload {
         download_id: download_id.to_string(),
@@ -438,7 +531,219 @@ pub async fn download_with_ytdlp<R: Runtime>(
     };
     let _ = app.emit("download-progress", &completed_payload);
 
-    Ok(final_bytes)
+    Ok((file_path, final_bytes))
+}
+
+/// Préfixe de la ligne `--print after_move:…` qui donne le chemin du fichier final.
+const FINAL_PATH_PREFIX: &str = "ktk-file:";
+
+/// Nombre de lignes de stderr conservées pour expliquer un échec.
+const STDERR_TAIL_LINES: usize = 50;
+
+/// Extensions ajoutées par `resolve_output_path` et remplacées par celle choisie par yt-dlp.
+const KNOWN_MEDIA_EXTENSIONS: &[&str] = &["mp4", "mp3", "m4a", "webm", "mkv", "mov"];
+
+/// Emplacement de sortie yt-dlp dérivé du chemin cible : même dossier et même nom de base,
+/// extension laissée à yt-dlp (`%(ext)s`), seul à connaître le conteneur réellement produit.
+struct YtdlpOutput {
+    dir: PathBuf,
+    base_name: String,
+}
+
+impl YtdlpOutput {
+    fn for_target(target_path: &Path) -> Option<Self> {
+        let dir = target_path.parent()?.to_path_buf();
+        let has_known_extension = target_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| KNOWN_MEDIA_EXTENSIONS.contains(&e.to_ascii_lowercase().as_str()));
+        let base_name = if has_known_extension {
+            target_path.file_stem()?.to_str()?
+        } else {
+            target_path.file_name()?.to_str()?
+        };
+        Some(Self {
+            dir,
+            base_name: base_name.to_string(),
+        })
+    }
+
+    /// Modèle `-o` pour yt-dlp. `%` y est un caractère spécial : il est doublé dans le chemin
+    /// littéral pour qu'un dossier ou un nom contenant `%` ne soit pas interprété.
+    fn template(&self) -> String {
+        let literal = self
+            .dir
+            .join(&self.base_name)
+            .to_string_lossy()
+            .replace('%', "%%");
+        format!("{}.%(ext)s", literal)
+    }
+
+    /// Supprime les fichiers intermédiaires laissés par un processus yt-dlp interrompu ou en échec.
+    async fn remove_intermediate_files(&self) {
+        let Ok(mut entries) = tokio::fs::read_dir(&self.dir).await else {
+            return;
+        };
+
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if is_ytdlp_intermediate_file(name, &self.base_name) {
+                let _ = tokio::fs::remove_file(entry.path()).await;
+            }
+        }
+    }
+}
+
+/// Reconnaît les fichiers intermédiaires de yt-dlp pour un nom de base donné.
+///
+/// yt-dlp écrit `<nom>.<ext>.part`, `<nom>.<ext>.ytdl`, des fragments `.part-FragN` et, pour les
+/// formats séparés en attente de fusion, `<nom>.f<id>.<ext>`. Le fichier final `<nom>.<ext>`
+/// n'est jamais concerné, afin de ne pas supprimer un téléchargement terminé.
+fn is_ytdlp_intermediate_file(file_name: &str, base_name: &str) -> bool {
+    let Some(rest) = file_name
+        .strip_prefix(base_name)
+        .and_then(|r| r.strip_prefix('.'))
+    else {
+        return false;
+    };
+
+    if rest.ends_with(".part") || rest.ends_with(".ytdl") || rest.contains(".part-Frag") {
+        return true;
+    }
+
+    // Flux séparé : `f<id>.<ext>` (ex. `f251.webm`, `f251-drc.webm`)
+    match rest.split_once('.') {
+        Some((format_part, ext)) => {
+            format_part.len() > 1
+                && format_part.starts_with('f')
+                && format_part[1..]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+                && !ext.is_empty()
+                && !ext.contains('.')
+        }
+        None => false,
+    }
+}
+
+/// Lit stderr jusqu'à sa fermeture en ne gardant que les dernières lignes.
+async fn collect_stderr_tail(stderr: tokio::process::ChildStderr) -> String {
+    let mut lines = BufReader::new(stderr).lines();
+    let mut tail: VecDeque<String> = VecDeque::with_capacity(STDERR_TAIL_LINES);
+    while let Ok(Some(line)) = lines.next_line().await {
+        if tail.len() == STDERR_TAIL_LINES {
+            tail.pop_front();
+        }
+        tail.push_back(line);
+    }
+    Vec::from(tail).join("\n")
+}
+
+/// Traduit la sortie d'erreur de yt-dlp en erreur compréhensible.
+///
+/// Les avertissements (`WARNING:`) sont écartés quand des lignes `ERROR:` existent, pour que
+/// leur contenu ne fausse pas le diagnostic.
+fn ytdlp_failure_error(stderr_tail: &str, requires_single_file: bool) -> CommandError {
+    let error_lines: Vec<&str> = stderr_tail
+        .lines()
+        .filter(|l| l.starts_with("ERROR:"))
+        .collect();
+    let relevant = if error_lines.is_empty() {
+        stderr_tail.to_string()
+    } else {
+        error_lines.join("\n")
+    };
+
+    if requires_single_file
+        && relevant
+            .to_lowercase()
+            .contains("requested format is not available")
+    {
+        return CommandError::DownloadFailed(
+            "Cette vidéo n'existe qu'en flux audio et vidéo séparés. Installez ffmpeg pour permettre leur fusion, puis réessayez.".to_string(),
+        );
+    }
+
+    if relevant.trim().is_empty() {
+        return CommandError::DownloadFailed(
+            "Le téléchargement via yt-dlp s'est interrompu anormalement.".to_string(),
+        );
+    }
+
+    CommandError::from_ytdlp_stderr(&relevant)
+}
+
+/// Localise `ffmpeg`, nécessaire à yt-dlp pour fusionner audio et vidéo ou convertir en MP3.
+fn find_ffmpeg_binary() -> Option<PathBuf> {
+    find_executable(
+        "ffmpeg",
+        &[
+            PathBuf::from("/usr/local/bin/ffmpeg"),
+            PathBuf::from("/usr/bin/ffmpeg"),
+            PathBuf::from("/opt/homebrew/bin/ffmpeg"),
+        ],
+    )
+}
+
+/// Localise un runtime JavaScript pour le solveur de défis YouTube de yt-dlp (EJS).
+///
+/// Sans runtime, YouTube ne livre qu'une partie des formats (souvent aucun format audio+vidéo
+/// combiné). yt-dlp n'active que deno par défaut : node et bun doivent lui être indiqués.
+fn find_js_runtime() -> Option<(&'static str, PathBuf)> {
+    let home_install = |relative: &str| -> Vec<PathBuf> {
+        dirs::home_dir()
+            .map(|home| vec![home.join(relative)])
+            .unwrap_or_default()
+    };
+
+    find_executable("deno", &home_install(".deno/bin/deno"))
+        .map(|path| ("deno", path))
+        .or_else(|| {
+            find_executable(
+                "node",
+                &[
+                    PathBuf::from("/usr/local/bin/node"),
+                    PathBuf::from("/usr/bin/node"),
+                    PathBuf::from("/opt/homebrew/bin/node"),
+                ],
+            )
+            .map(|path| ("node", path))
+        })
+        .or_else(|| find_executable("bun", &home_install(".bun/bin/bun")).map(|path| ("bun", path)))
+}
+
+/// Recherche un exécutable dans le `PATH`, puis dans les emplacements usuels fournis.
+fn find_executable(name: &str, usual_locations: &[PathBuf]) -> Option<PathBuf> {
+    let file_name = if cfg!(windows) {
+        format!("{}.exe", name)
+    } else {
+        name.to_string()
+    };
+
+    if let Some(path_var) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(&file_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    usual_locations.iter().find(|p| p.is_file()).cloned()
+}
+
+/// Prépare une commande yt-dlp avec le runtime JavaScript détecté, commune à l'analyse et au
+/// téléchargement pour que les deux voient les mêmes formats.
+fn ytdlp_command(ytdlp_bin: &Path) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(ytdlp_bin);
+    if let Some((runtime, path)) = find_js_runtime() {
+        cmd.arg("--js-runtimes")
+            .arg(format!("{}:{}", runtime, path.display()));
+    }
+    cmd
 }
 
 /// Convertit une chaîne de pourcentage (ex: "  45.2%") en nombre à virgule flottante.
@@ -541,5 +846,128 @@ mod tests {
         assert_eq!(parse_bytes_str(" 10.0MiB"), Some(10 * 1024 * 1024));
         assert_eq!(parse_bytes_str(" 1.0GiB"), Some(1024 * 1024 * 1024));
         assert_eq!(parse_bytes_str("N/A"), None);
+    }
+
+    #[test]
+    fn test_is_ytdlp_intermediate_file() {
+        let base = "video_ab12cd34";
+        assert!(is_ytdlp_intermediate_file("video_ab12cd34.mp4.part", base));
+        assert!(is_ytdlp_intermediate_file("video_ab12cd34.webm.ytdl", base));
+        assert!(is_ytdlp_intermediate_file(
+            "video_ab12cd34.f137.mp4.part",
+            base
+        ));
+        assert!(is_ytdlp_intermediate_file(
+            "video_ab12cd34.mp4.part-Frag12",
+            base
+        ));
+        // Flux séparés laissés sans fusion quand ffmpeg est absent
+        assert!(is_ytdlp_intermediate_file("video_ab12cd34.f251.webm", base));
+        assert!(is_ytdlp_intermediate_file("video_ab12cd34.f395.mp4", base));
+        assert!(is_ytdlp_intermediate_file(
+            "video_ab12cd34.f251-drc.webm",
+            base
+        ));
+
+        // Fichiers finalisés ou appartenant à un autre téléchargement : jamais supprimés
+        assert!(!is_ytdlp_intermediate_file("video_ab12cd34.mp4", base));
+        assert!(!is_ytdlp_intermediate_file("video_ab12cd34.webm", base));
+        assert!(!is_ytdlp_intermediate_file("video_ffffffff.mp4.part", base));
+        assert!(!is_ytdlp_intermediate_file(
+            "video_ab12cd345.mp4.part",
+            base
+        ));
+    }
+
+    #[test]
+    fn test_ytdlp_output_template_lets_ytdlp_choose_extension() {
+        let output = YtdlpOutput::for_target(Path::new("/tmp/dl/video_ab12cd34.mp4")).unwrap();
+        assert_eq!(output.base_name, "video_ab12cd34");
+        assert_eq!(output.template(), "/tmp/dl/video_ab12cd34.%(ext)s");
+    }
+
+    #[test]
+    fn test_ytdlp_output_template_escapes_percent_and_keeps_dotted_names() {
+        let output = YtdlpOutput::for_target(Path::new("/tmp/100% films/Mr. Bean")).unwrap();
+        assert_eq!(output.base_name, "Mr. Bean");
+        assert_eq!(output.template(), "/tmp/100%% films/Mr. Bean.%(ext)s");
+    }
+
+    #[test]
+    fn test_ytdlp_failure_error_explains_missing_ffmpeg() {
+        let stderr = "WARNING: [youtube] No supported JavaScript runtime could be found.\n\
+                      ERROR: [youtube] jNQXAC9IVRw: Requested format is not available. Use --list-formats for a list of available formats";
+        match ytdlp_failure_error(stderr, true) {
+            CommandError::DownloadFailed(msg) => assert!(msg.contains("ffmpeg")),
+            other => panic!("Erreur inattendue : {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_ytdlp_failure_error_ignores_warnings_when_errors_exist() {
+        // L'avertissement contient « not found » (vidéo introuvable) mais la vraie cause est une
+        // vidéo privée.
+        let stderr =
+            "WARNING: [youtube] subtitles not found\nERROR: [youtube] abc: Private video. Sign in";
+        assert!(matches!(
+            ytdlp_failure_error(stderr, false),
+            CommandError::DownloadFailed(_)
+        ));
+    }
+
+    #[test]
+    fn test_find_executable_uses_usual_locations() {
+        let dir = std::env::temp_dir().join("ktk-find-executable-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake_bin = dir.join("ktk-fake-runtime");
+        std::fs::write(&fake_bin, "").unwrap();
+
+        assert_eq!(
+            find_executable("ktk-fake-runtime", std::slice::from_ref(&fake_bin)),
+            Some(fake_bin.clone())
+        );
+        assert_eq!(
+            find_executable("ktk-absent-runtime", &[dir.join("ktk-absent-runtime")]),
+            None
+        );
+
+        let _ = std::fs::remove_file(&fake_bin);
+    }
+
+    #[test]
+    fn test_is_direct_media() {
+        assert!(is_direct_media("video/mp4", "/media/clip"));
+        assert!(is_direct_media("audio/mpeg; charset=binary", "/a"));
+        assert!(is_direct_media(
+            "application/octet-stream",
+            "/files/clip.MP4"
+        ));
+
+        assert!(!is_direct_media(
+            "text/html; charset=utf-8",
+            "/watch/clip.mp4"
+        ));
+        assert!(!is_direct_media(
+            "application/octet-stream",
+            "/files/setup.exe"
+        ));
+        assert!(!is_direct_media("", "/files/clip.mp4"));
+    }
+
+    #[test]
+    fn test_media_title_from_path() {
+        assert_eq!(
+            media_title_from_path("/media/big_buck_bunny.mp4"),
+            "big_buck_bunny"
+        );
+        assert_eq!(media_title_from_path("/"), "Vidéo Web");
+    }
+
+    #[test]
+    fn test_ytdlp_failure_error_without_output() {
+        assert!(matches!(
+            ytdlp_failure_error("", false),
+            CommandError::DownloadFailed(_)
+        ));
     }
 }

@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncWriteExt, BufWriter};
 
@@ -168,6 +168,19 @@ pub async fn download_stream<R: Runtime>(
         return Err(CommandError::from_http_status(status));
     }
 
+    // Une page web enregistrée sous `.mp4` passerait pour un téléchargement réussi.
+    if let Some(content_type) = response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        && is_non_media_content_type(content_type)
+    {
+        emit_failure(app, download_id, 0, None);
+        return Err(CommandError::UnsupportedPlatform(
+            "L'adresse mène à une page web ou à une liste de lecture, pas à un fichier vidéo téléchargeable directement.".to_string(),
+        ));
+    }
+
     let total_bytes = response.content_length();
 
     // 6. Ouverture du fichier temporaire avec buffer non-bloquant de 128 Ko
@@ -317,6 +330,29 @@ pub async fn download_stream<R: Runtime>(
     Ok(downloaded_bytes)
 }
 
+/// Types de contenu qui ne sont jamais le fichier vidéo lui-même : page web, réponse d'API, ou
+/// manifeste de streaming (HLS/DASH) qu'il faudrait interpréter au lieu de l'enregistrer tel quel.
+const NON_MEDIA_CONTENT_TYPES: &[&str] = &[
+    "text/html",
+    "application/xhtml+xml",
+    "application/json",
+    "application/vnd.apple.mpegurl",
+    "application/x-mpegurl",
+    "audio/mpegurl",
+    "audio/x-mpegurl",
+    "application/dash+xml",
+];
+
+fn is_non_media_content_type(content_type: &str) -> bool {
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    NON_MEDIA_CONTENT_TYPES.contains(&mime.as_str())
+}
+
 fn emit_failure<R: Runtime>(
     app: &AppHandle<R>,
     download_id: &str,
@@ -364,6 +400,17 @@ mod tests {
         let path = resolve_output_path(Some("/tmp"), Some("my_vacation"), "abcdef12", "mp4");
         let filename = path.file_name().unwrap().to_str().unwrap();
         assert_eq!(filename, "my_vacation.mp4");
+    }
+
+    #[test]
+    fn test_is_non_media_content_type() {
+        assert!(is_non_media_content_type("text/html; charset=utf-8"));
+        assert!(is_non_media_content_type("TEXT/HTML"));
+        assert!(is_non_media_content_type("application/vnd.apple.mpegurl"));
+
+        assert!(!is_non_media_content_type("video/mp4"));
+        assert!(!is_non_media_content_type("audio/mpeg"));
+        assert!(!is_non_media_content_type("application/octet-stream"));
     }
 
     #[test]

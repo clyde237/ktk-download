@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
@@ -8,12 +10,12 @@ use crate::models::{
     DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, ValidatedUrlPayload,
     VideoMetadata,
 };
-use crate::validator;
+use crate::validator::{self, VideoPlatform};
 
 /// Commande IPC : Valide et assainit instantanément une URL sans bloquer l'interface.
 ///
 /// Permet au frontend de vérifier en temps réel la validité du format et d'identifier la plateforme
-/// (YouTube, MoviBox, etc.) dès la frappe ou le collage.
+/// (YouTube, Vimeo, flux direct, etc.) dès la frappe ou le collage.
 #[tauri::command]
 pub fn validate_url(url: String) -> Result<ValidatedUrlPayload, CommandError> {
     let validated = validator::validate_and_sanitize_url(&url)?;
@@ -37,11 +39,17 @@ pub fn cancel_download(
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
 ///
 /// Cette commande valide et assainit d'abord l'URL, puis utilise le moteur d'extraction `yt-dlp`
-/// (avec fallback HTML/HLS pour MoviBox et flux directs) pour résoudre dynamiquement les informations vidéo.
+/// (avec analyse HTML/HLS de secours pour les fichiers et lecteurs web génériques) pour résoudre
+/// dynamiquement les informations vidéo. La règle est la même qu'au téléchargement : une page de
+/// plateforme n'est jamais analysée ni téléchargée en direct.
 #[tauri::command]
 pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
     let validated = validator::validate_and_sanitize_url(&url)?;
-    extractor::extract_metadata(&validated.canonical_url).await
+    extractor::extract_metadata(
+        &validated.canonical_url,
+        allows_direct_stream(&validated.platform),
+    )
+    .await
 }
 
 /// Commande IPC : Initialise et orchestre le téléchargement d'une vidéo avec suivi de progression.
@@ -56,7 +64,12 @@ pub async fn download_video(
 ) -> Result<DownloadResult, CommandError> {
     let validated = validator::validate_and_sanitize_url(&request.url)?;
 
-    let download_id = Uuid::new_v4().to_string();
+    let download_id = resolve_download_id(request.download_id.as_deref())?;
+    if registry.is_active(&download_id) {
+        return Err(CommandError::Internal(
+            "Un téléchargement portant cet identifiant est déjà en cours.".to_string(),
+        ));
+    }
     let cancel_token = registry.register(&download_id);
 
     let format = request.format_id.as_deref().unwrap_or("best");
@@ -83,7 +96,18 @@ pub async fn download_video(
         extension,
     );
 
-    // Tentative de téléchargement avec yt-dlp si disponible
+    let direct_stream_allowed = allows_direct_stream(&validated.platform);
+    let stream_directly = || {
+        downloader::download_stream(
+            &app,
+            &download_id,
+            &validated.canonical_url,
+            &target_path,
+            Some(Arc::clone(&cancel_token)),
+        )
+    };
+
+    // yt-dlp en priorité ; le streaming direct seulement pour un fichier média servi tel quel
     let download_result = if extractor::find_ytdlp_binary().is_some() {
         match extractor::download_with_ytdlp(
             &app,
@@ -91,41 +115,40 @@ pub async fn download_video(
             &validated.canonical_url,
             Some(format),
             &target_path,
+            Some(Arc::clone(&cancel_token)),
         )
         .await
         {
-            Ok(bytes) => Ok(bytes),
-            Err(e) => {
+            Ok(file) => Ok(file),
+            // Une annulation volontaire ne doit pas relancer le téléchargement par un autre moteur.
+            Err(CommandError::DownloadCancelled) => Err(CommandError::DownloadCancelled),
+            Err(e) if direct_stream_allowed => {
                 log::warn!(
                     "Échec yt-dlp ({:?}), tentative avec le moteur de streaming direct...",
                     e
                 );
-                downloader::download_stream(
-                    &app,
-                    &download_id,
-                    &validated.canonical_url,
-                    &target_path,
-                    Some(cancel_token),
-                )
-                .await
+                stream_directly()
+                    .await
+                    .map(|bytes| (target_path.clone(), bytes))
             }
+            Err(e) => Err(e),
         }
+    } else if direct_stream_allowed {
+        stream_directly()
+            .await
+            .map(|bytes| (target_path.clone(), bytes))
     } else {
-        downloader::download_stream(
-            &app,
-            &download_id,
-            &validated.canonical_url,
-            &target_path,
-            Some(cancel_token),
-        )
-        .await
+        Err(CommandError::DownloadFailed(format!(
+            "yt-dlp est requis pour télécharger depuis {}, mais il est introuvable sur le système.",
+            validated.platform.as_str()
+        )))
     };
 
     registry.unregister(&download_id);
 
-    let total_bytes = download_result?;
-    let file_path_str = target_path.to_string_lossy().to_string();
-    let title = target_path
+    let (file_path, total_bytes) = download_result?;
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let title = file_path
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| format!("Vidéo ({})", format));
@@ -138,9 +161,60 @@ pub async fn download_video(
     })
 }
 
+/// Le streaming direct enregistre la réponse HTTP telle quelle : il ne convient qu'à un fichier
+/// média servi directement, jamais à la page d'une plateforme vidéo (YouTube, Vimeo…), dont
+/// seul yt-dlp sait extraire le flux.
+fn allows_direct_stream(platform: &VideoPlatform) -> bool {
+    matches!(platform, VideoPlatform::GenericWeb(_))
+}
+
+/// Valide l'identifiant fourni par le frontend (UUID) ou en génère un nouveau.
+///
+/// L'identifiant est renvoyé sous forme canonique (minuscules avec tirets), identique à celle
+/// produite par `crypto.randomUUID()`, pour que le frontend reconnaisse ses événements.
+fn resolve_download_id(requested: Option<&str>) -> Result<String, CommandError> {
+    match requested {
+        Some(raw) => Uuid::parse_str(raw.trim())
+            .map(|id| id.to_string())
+            .map_err(|_| {
+                CommandError::Internal("Identifiant de téléchargement invalide.".to_string())
+            }),
+        None => Ok(Uuid::new_v4().to_string()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_direct_stream_only_for_generic_web() {
+        assert!(allows_direct_stream(&VideoPlatform::GenericWeb(
+            "cdn.example.org".to_string()
+        )));
+        assert!(!allows_direct_stream(&VideoPlatform::YouTube));
+        assert!(!allows_direct_stream(&VideoPlatform::Vimeo));
+    }
+
+    #[test]
+    fn test_resolve_download_id_keeps_client_uuid() {
+        let id = "3f2b8c1e-9d4a-4e6b-8f1a-2c3d4e5f6a7b";
+        assert_eq!(resolve_download_id(Some(id)).unwrap(), id);
+    }
+
+    #[test]
+    fn test_resolve_download_id_rejects_invalid_value() {
+        assert!(matches!(
+            resolve_download_id(Some("../../etc/passwd")),
+            Err(CommandError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn test_resolve_download_id_generates_when_missing() {
+        let id = resolve_download_id(None).unwrap();
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
 
     #[test]
     fn test_inspect_url_empty() {
@@ -183,23 +257,12 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_url_movibox_detection() {
+    fn test_inspect_url_without_video_is_error() {
+        // `.invalid` ne se résout jamais (RFC 2606) : aucune métadonnée ne doit être inventée.
         tauri::async_runtime::block_on(async {
-            let result = inspect_url("https://movibox.net/watch/12345".to_string()).await;
-            assert!(result.is_ok());
-            let meta = result.unwrap();
-            assert_eq!(meta.source_platform, "MoviBox");
-            assert!(!meta.available_formats.is_empty());
-        });
-    }
-
-    #[test]
-    fn test_inspect_url_generic_stream() {
-        tauri::async_runtime::block_on(async {
-            let result = inspect_url("https://cdn.example.org/media/sample.mp4".to_string()).await;
-            assert!(result.is_ok());
-            let meta = result.unwrap();
-            assert_eq!(meta.source_platform, "Flux Web / Direct");
+            let result =
+                inspect_url("https://ktk-download.invalid/media/sample.mp4".to_string()).await;
+            assert!(result.is_err());
         });
     }
 

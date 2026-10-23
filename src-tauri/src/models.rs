@@ -36,7 +36,7 @@ pub struct VideoMetadata {
     pub thumbnail_url: Option<String>,
     /// Durée de la vidéo en secondes
     pub duration_seconds: Option<u64>,
-    /// Nom de la plateforme d'origine (ex: "YouTube", "MoviBox", "DirectStream")
+    /// Nom de la plateforme d'origine (ex: "YouTube", "Vimeo", "Flux Web / Direct")
     pub source_platform: String,
     /// URL d'origine fournie par l'utilisateur
     pub source_url: String,
@@ -55,6 +55,9 @@ pub struct DownloadRequest {
     pub output_dir: Option<String>,
     /// Nom personnalisé pour le fichier final (optionnel)
     pub custom_filename: Option<String>,
+    /// UUID choisi par le frontend pour corréler les événements `download-progress`
+    /// et permettre l'annulation avant la fin de la commande (généré sinon)
+    pub download_id: Option<String>,
 }
 
 /// Statut d'avancement d'un téléchargement.

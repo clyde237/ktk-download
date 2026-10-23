@@ -67,7 +67,14 @@ impl CommandError {
     /// Analyse les messages d'erreur retournés par yt-dlp pour fournir une explication claire.
     pub fn from_ytdlp_stderr(stderr: &str) -> Self {
         let lower = stderr.to_lowercase();
-        if lower.contains("video unavailable")
+        // Avant « not found » : « ffmpeg not found » ne signifie pas que la vidéo est introuvable.
+        if lower.contains("ffmpeg")
+            && (lower.contains("not found") || lower.contains("not installed"))
+        {
+            Self::DownloadFailed(
+                "ffmpeg est requis pour ce format (fusion audio/vidéo ou conversion MP3). Installez ffmpeg puis réessayez.".to_string(),
+            )
+        } else if lower.contains("video unavailable")
             || lower.contains("does not exist")
             || lower.contains("not found")
         {
@@ -192,6 +199,12 @@ mod tests {
             CommandError::from_ytdlp_stderr(timeout),
             CommandError::NetworkTimeout(_)
         ));
+
+        let missing_ffmpeg = "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location";
+        match CommandError::from_ytdlp_stderr(missing_ffmpeg) {
+            CommandError::DownloadFailed(msg) => assert!(msg.contains("ffmpeg")),
+            other => panic!("Erreur inattendue : {:?}", other),
+        }
     }
 
     #[test]
