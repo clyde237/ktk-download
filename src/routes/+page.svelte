@@ -2,7 +2,9 @@
   import DestinationPicker from '$lib/components/DestinationPicker.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
+  import { untrack } from 'svelte';
   import { destination } from '$lib/stores/destination.svelte';
+  import { createDownloadNotifier } from '$lib/stores/download-notifications';
   import { downloads, isTerminalStatus } from '$lib/stores/downloads.svelte';
   import type { CommandError, VideoMetadata } from '$lib/types/download';
   import { formatDuration, formatErrorMessage } from '$lib/utils/format';
@@ -21,6 +23,18 @@
   let isDownloading = $derived(
     isStartingDownload || (activeDownload !== null && !isTerminalStatus(activeDownload.status))
   );
+
+  // Notifications du cycle de vie du téléchargement actif
+  const notifyDownload = createDownloadNotifier();
+
+  $effect(() => {
+    const entry = activeDownload;
+    if (!entry) return;
+    // Champs dont l'évolution peut produire une notification : seuls ceux-ci relancent l'effet.
+    void [entry.status, entry.progressPercentage, entry.filePath, entry.errorMessage];
+    // Le notificateur lit et modifie la liste des toasts : hors suivi pour ne pas boucler.
+    untrack(() => notifyDownload(entry));
+  });
 
   async function handleDownload() {
     if (!inspectedVideo || isDownloading) return;

@@ -45,6 +45,8 @@
   --color-inverse: oklch(0.22 0.012 var(--neutral-hue));
   --color-inverse-hover: oklch(0.32 0.012 var(--neutral-hue));
   --color-on-inverse: oklch(0.99 0.002 var(--neutral-hue));
+  --color-on-inverse-muted: oklch(0.8 0.01 var(--neutral-hue));
+  --color-danger-on-inverse: oklch(0.66 0.2 25);
 
   --color-focus: var(--color-accent-strong);
 

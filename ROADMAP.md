@@ -24,7 +24,7 @@
 - [x] Implémenter la barre de progression réactive liée au store `$state` Svelte 5, mise à jour asynchrone via les événements IPC Tauri
 - [x] Concevoir et intégrer le thème clair moderne avec échelle typographique, palette de couleurs et mise en page réactive (Tailwind CSS ou CSS modules)
 - [x] Développer le sélecteur de dossier de destination avec API file picker native et accès rapide aux dossiers récemment utilisés
-- [ ] Ajouter un système de notifications (toasts) pour le démarrage, la complétion, les erreurs et les jalons de progression du téléchargement
+- [x] Ajouter un système de notifications (toasts) pour le démarrage, la complétion, les erreurs et les jalons de progression du téléchargement
 
 ## Phase 4 : Fonctionnalités Avancées & Raffinement
 

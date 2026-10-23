@@ -178,9 +178,6 @@
   {:else if entry.status === 'failed' && entry.errorMessage}
     <p class="result-line error-line" role="alert">{entry.errorMessage}</p>
   {/if}
-
-  <!-- Annonce des changements d'état seulement, pas de chaque pourcentage -->
-  <p class="visually-hidden" aria-live="polite">{statusLabel}</p>
 </article>
 
 <style>
@@ -400,18 +397,6 @@
     border-radius: var(--radius-md);
     background-color: var(--color-danger-wash);
     color: var(--color-danger);
-  }
-
-  .visually-hidden {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
   }
 
   @keyframes scan {
