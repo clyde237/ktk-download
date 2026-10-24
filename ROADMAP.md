@@ -41,4 +41,4 @@
 - [x] Mettre en place des tests d'intégration pour les round-trips IPC Tauri (URL → téléchargement → progression → achèvement)
 - [x] Configurer les pipelines de build Tauri pour toutes les cibles (.deb, .AppImage, .exe, .dmg) avec mise en place de code signing
 - [ ] Générer les assets de release et automatiser le bumping de version via `bumpp` ou équivalent
-- [ ] Rédiger la documentation utilisateur et contributeur, et valider les prérequis spécifiques à chaque plateforme pour la distribution
+- [x] Rédiger la documentation utilisateur et contributeur, et valider les prérequis spécifiques à chaque plateforme pour la distribution
