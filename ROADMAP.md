@@ -31,8 +31,9 @@
 - [x] Implémenter la sélection de qualité (1080p, 720p, 480p, MP3 audio) avec liaison d'état frontend et passage au backend
 - [x] Construire le magasin d'historique des téléchargements (localStorage ou SQLite via plugin Tauri) avec ouverture directe du dossier et ré-exécution
 - [x] Développer le système de file d'attente de téléchargements multiples avec réordonnancement par priorité, pause et reprise via des tokens de statut
-- [ ] Intégrer l'API d'accès au système de fichiers pour ouvrir directement le dossier contenant les fichiers téléchargés
+- [x] Intégrer l'API d'accès au système de fichiers pour ouvrir directement le dossier contenant les fichiers téléchargés
 - [ ] Peaufiner les états de chargement, les bordures d'erreur et les états vides sur l'ensemble des composants
+- [ ] creer une extension compatible (firefox, edge, chorme et opera); une fois l'extension installé elle detectera les videos sur n'importe quel page et proposera de la telechargé (comme le fait IDM).
 
 ## Phase 5 : Tests, Déploiement & Release
 

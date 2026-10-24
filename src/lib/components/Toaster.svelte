@@ -86,6 +86,17 @@
           {#if toast.message}
             <p class="toast-message">{toast.message}</p>
           {/if}
+          {#if toast.action}
+            <button
+              type="button"
+              class="toast-action"
+              onclick={() => {
+                toast.action?.onClick();
+              }}
+            >
+              {toast.action.label}
+            </button>
+          {/if}
         </div>
         <button
           type="button"
@@ -183,6 +194,30 @@
     line-height: 1.45;
     color: var(--color-on-inverse-muted);
     overflow-wrap: anywhere;
+  }
+
+  .toast-action {
+    display: inline-flex;
+    align-items: center;
+    align-self: flex-start;
+    margin-top: var(--space-2);
+    padding: 3px var(--space-2);
+    min-height: 24px;
+    border-radius: var(--radius-sm);
+    background-color: oklch(1 0 0 / 0.15);
+    border: 1px solid oklch(1 0 0 / 0.25);
+    color: var(--color-on-inverse);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out);
+  }
+
+  .toast-action:hover {
+    background-color: oklch(1 0 0 / 0.25);
+    border-color: oklch(1 0 0 / 0.4);
   }
 
   .toast-close {

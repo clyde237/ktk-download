@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { revealItemInDir } from '@tauri-apps/plugin-opener';
   import { history, type HistoryEntry } from '../stores/history.svelte';
   import { toasts } from '../stores/toasts.svelte';
+  import { revealItem } from '../utils/filesystem';
   import { formatBytes, formatFullDate, formatRelativeDate } from '../utils/format';
 
   interface Props {
@@ -48,15 +48,7 @@
 
   async function revealFile(entry: HistoryEntry) {
     if (!entry.filePath) return;
-    try {
-      await revealItemInDir(entry.filePath);
-    } catch (err: unknown) {
-      console.warn('Ouverture du dossier impossible :', err);
-      toasts.error({
-        title: 'Fichier introuvable',
-        message: `« ${entry.title} » a peut-être été déplacé ou supprimé.`
-      });
-    }
+    await revealItem(entry.filePath, entry.title);
   }
 
   function handleClear() {

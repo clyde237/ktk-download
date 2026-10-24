@@ -1,5 +1,10 @@
 export type ToastKind = 'info' | 'success' | 'error';
 
+export interface ToastAction {
+  label: string;
+  onClick: () => void | Promise<void>;
+}
+
 export interface Toast {
   id: number;
   kind: ToastKind;
@@ -7,6 +12,8 @@ export interface Toast {
   message?: string;
   /** Un toast portant la même clé remplace le précédent au lieu de s'empiler. */
   key?: string;
+  /** Action interactive optionnelle (ex: « Ouvrir le dossier »). */
+  action?: ToastAction;
   /** Durée d'affichage en ms ; `null` : reste affiché jusqu'à sa fermeture. */
   duration: number | null;
 }
@@ -15,6 +22,7 @@ export interface ToastOptions {
   title: string;
   message?: string;
   key?: string;
+  action?: ToastAction;
   duration?: number | null;
 }
 
@@ -38,6 +46,7 @@ class ToastStore {
       title: options.title,
       message: options.message,
       key: options.key,
+      action: options.action,
       duration: options.duration === undefined ? DEFAULT_DURATIONS[kind] : options.duration
     };
 

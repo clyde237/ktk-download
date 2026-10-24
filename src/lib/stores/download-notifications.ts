@@ -1,3 +1,4 @@
+import { revealItem } from '../utils/filesystem';
 import { isRunningStatus, type DownloadEntry } from './downloads.svelte';
 import { toasts } from './toasts.svelte';
 
@@ -67,10 +68,18 @@ export function createDownloadNotifier() {
 
     if (entry.status === 'completed' && entry.filePath) {
       tracking.outcomeNotified = true;
+      const filePath = entry.filePath;
+      const fileName = fileNameOf(filePath);
       toasts.success({
         title: 'Téléchargement terminé',
-        message: fileNameOf(entry.filePath),
-        key
+        message: fileName,
+        key,
+        action: {
+          label: 'Ouvrir le dossier',
+          onClick: () => {
+            void revealItem(filePath, fileName);
+          }
+        }
       });
     } else if (entry.status === 'failed' && entry.errorMessage) {
       tracking.outcomeNotified = true;

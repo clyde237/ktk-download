@@ -4,6 +4,7 @@
     isTerminalStatus,
     type DownloadEntry
   } from '../stores/downloads.svelte';
+  import { revealItem } from '../utils/filesystem';
   import { formatBytes, formatDuration, formatSpeed } from '../utils/format';
 
   interface Props {
@@ -81,6 +82,12 @@
   let valueText = $derived(
     isIndeterminate ? statusLabel : sizeLabel ? `${percentageLabel}, ${sizeLabel}` : percentageLabel
   );
+
+  async function handleReveal() {
+    if (entry.filePath) {
+      await revealItem(entry.filePath, entry.title);
+    }
+  }
 </script>
 
 <article
@@ -218,6 +225,31 @@
           Annuler
         </button>
       {:else}
+        {#if entry.status === 'completed' && entry.filePath}
+          <button
+            type="button"
+            class="card-btn open-btn"
+            onclick={handleReveal}
+            title="Afficher le fichier dans le dossier de destination"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path
+                d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"
+              />
+            </svg>
+            <span>Ouvrir le dossier</span>
+          </button>
+        {/if}
         <button type="button" class="card-btn dismiss-btn" onclick={onDismiss}>Fermer</button>
       {/if}
     </div>
@@ -258,7 +290,15 @@
 
   {#if entry.status === 'completed' && entry.filePath}
     <p class="result-line">
-      Enregistré dans <span class="file-path">{entry.filePath}</span>
+      Enregistré dans{' '}
+      <button
+        type="button"
+        class="file-path-btn"
+        onclick={handleReveal}
+        title="Cliquer pour afficher dans le dossier"
+      >
+        {entry.filePath}
+      </button>
     </p>
   {:else if entry.status === 'failed' && entry.errorMessage}
     <p class="result-line error-line" role="alert">{entry.errorMessage}</p>
@@ -499,6 +539,21 @@
     color: var(--color-text);
   }
 
+  .open-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    border-color: var(--color-accent-border);
+    background-color: var(--color-accent-subtle, oklch(0.96 0.02 var(--accent-hue)));
+    color: var(--color-accent-strong);
+  }
+
+  .open-btn:hover {
+    background-color: var(--color-accent);
+    border-color: var(--color-accent);
+    color: #ffffff;
+  }
+
   .card-btn:disabled {
     opacity: 0.6;
     cursor: not-allowed;
@@ -511,12 +566,28 @@
     color: var(--color-text-muted);
   }
 
-  .file-path {
+  .file-path-btn {
+    display: inline;
+    padding: 0;
+    border: none;
+    background: none;
     font-family: var(--font-mono);
     font-size: var(--text-xs);
     color: var(--color-text);
     word-break: break-all;
-    user-select: text;
+    text-align: left;
+    text-decoration: underline;
+    text-decoration-color: var(--color-border-strong);
+    text-underline-offset: 2px;
+    cursor: pointer;
+    transition:
+      color var(--duration-fast) var(--ease-out),
+      text-decoration-color var(--duration-fast) var(--ease-out);
+  }
+
+  .file-path-btn:hover {
+    color: var(--color-accent-strong);
+    text-decoration-color: var(--color-accent-strong);
   }
 
   .error-line {
