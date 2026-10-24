@@ -2,7 +2,7 @@
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "ktk-download",
   "version": "0.1.0",
-  "identifier": "com.kore-teck.wwww",
+  "identifier": "com.koreteck.ktkdownload",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -13,8 +13,11 @@
     "windows": [
       {
         "title": "ktk-download",
-        "width": 800,
-        "height": 600
+        "width": 960,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 540,
+        "center": true
       }
     ],
     "security": {
@@ -23,13 +26,59 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": ["deb", "appimage", "nsis", "dmg"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "publisher": "Kore-Teck",
+    "copyright": "Copyright © 2026 Kore-Teck. Tous droits réservés.",
+    "shortDescription": "Téléchargeur universel de vidéos web haute performance",
+    "longDescription": "Application de bureau moderne et intuitive pour télécharger des vidéos et flux multimédias depuis YouTube et les sites web avec suivi en direct et choix de qualité.",
+    "category": "Utility",
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ],
+        "section": "utils",
+        "priority": "optional"
+      },
+      "appimage": {
+        "bundleMediaFramework": true
+      }
+    },
+    "windows": {
+      "certificateThumbprint": null,
+      "timestampUrl": "http://timestamp.digicert.com",
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false
+      }
+    },
+    "macOS": {
+      "signingIdentity": null,
+      "providerShortName": null,
+      "minimumSystemVersion": "10.15",
+      "dmg": {
+        "windowSize": {
+          "width": 600,
+          "height": 400
+        },
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 420,
+          "y": 170
+        }
+      }
+    }
   }
 }
