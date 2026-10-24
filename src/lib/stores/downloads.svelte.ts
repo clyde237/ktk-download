@@ -8,6 +8,7 @@ import type {
   DownloadStatus
 } from '../types/download';
 import { formatErrorMessage } from '../utils/format';
+import { history, type HistoryEntry } from './history.svelte';
 
 /**
  * État d'un téléchargement tel qu'affiché par l'interface.
@@ -118,8 +119,26 @@ class DownloadStore {
       custom_filename: options.fileName
     };
 
+    // Enregistré dans l'historique même si la carte a déjà été fermée entre-temps.
+    const recordHistory = (outcome: Pick<HistoryEntry, 'status'> & Partial<HistoryEntry>) => {
+      history.record({
+        id,
+        title,
+        sourceUrl: url,
+        formatId: options.formatId ?? 'best',
+        outputDir: options.outputDir,
+        finishedAt: new Date().toISOString(),
+        ...outcome
+      });
+    };
+
     invoke<DownloadResult>('download_video', { request })
       .then((result) => {
+        recordHistory({
+          status: 'completed',
+          filePath: result.file_path,
+          fileSizeBytes: result.file_size_bytes
+        });
         const entry = this.entries[id];
         if (!entry) return;
         entry.status = 'completed';
@@ -131,15 +150,19 @@ class DownloadStore {
         entry.filePath = result.file_path;
       })
       .catch((err: unknown) => {
+        const cancelled = isCancellationError(err);
+        const errorMessage = cancelled ? undefined : formatErrorMessage(err);
+        recordHistory(cancelled ? { status: 'cancelled' } : { status: 'failed', errorMessage });
+
         const entry = this.entries[id];
         if (!entry) return;
         entry.speedBytesPerSec = 0;
         entry.etaSeconds = undefined;
-        if (isCancellationError(err)) {
+        if (cancelled) {
           entry.status = 'cancelled';
         } else {
           entry.status = 'failed';
-          entry.errorMessage = formatErrorMessage(err);
+          entry.errorMessage = errorMessage;
         }
       });
 

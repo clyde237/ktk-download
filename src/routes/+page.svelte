@@ -1,5 +1,6 @@
 <script lang="ts">
   import DestinationPicker from '$lib/components/DestinationPicker.svelte';
+  import DownloadHistory from '$lib/components/DownloadHistory.svelte';
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import QualitySelector from '$lib/components/QualitySelector.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
@@ -7,6 +8,8 @@
   import { destination } from '$lib/stores/destination.svelte';
   import { createDownloadNotifier } from '$lib/stores/download-notifications';
   import { downloads, isTerminalStatus } from '$lib/stores/downloads.svelte';
+  import { history, type HistoryEntry } from '$lib/stores/history.svelte';
+  import { toasts } from '$lib/stores/toasts.svelte';
   import type { CommandError, VideoMetadata } from '$lib/types/download';
   import { formatDuration, formatErrorMessage } from '$lib/utils/format';
 
@@ -39,30 +42,62 @@
     untrack(() => notifyDownload(entry));
   });
 
-  async function handleDownload() {
-    if (!inspectedVideo || isDownloading) return;
+  /**
+   * Lance un téléchargement (nouveau ou relancé depuis l'historique).
+   * Renvoie le message d'erreur si le lancement lui-même échoue.
+   */
+  async function startDownload(params: {
+    url: string;
+    title: string;
+    formatId: string;
+    outputDir?: string;
+  }): Promise<string | null> {
+    if (isDownloading) return null;
 
     isStartingDownload = true;
-    downloadStartError = null;
     if (activeDownloadId) {
       downloads.dismiss(activeDownloadId);
     }
 
-    const outputDir = destination.selected ?? undefined;
     try {
-      activeDownloadId = await downloads.start(inspectedVideo.source_url, inspectedVideo.title, {
-        outputDir,
-        formatId: selectedQuality,
-        fileName: inspectedVideo.title
+      activeDownloadId = await downloads.start(params.url, params.title, {
+        outputDir: params.outputDir,
+        formatId: params.formatId,
+        fileName: params.title
       });
-      if (outputDir) {
-        destination.remember(outputDir);
+      if (params.outputDir) {
+        destination.remember(params.outputDir);
       }
+      return null;
     } catch (err: unknown) {
       activeDownloadId = null;
-      downloadStartError = formatErrorMessage(err);
+      return formatErrorMessage(err);
     } finally {
       isStartingDownload = false;
+    }
+  }
+
+  async function handleDownload() {
+    if (!inspectedVideo) return;
+    downloadStartError = null;
+    downloadStartError = await startDownload({
+      url: inspectedVideo.source_url,
+      title: inspectedVideo.title,
+      formatId: selectedQuality,
+      outputDir: destination.selected ?? undefined
+    });
+  }
+
+  // Relance avec les mêmes réglages qu'à l'origine (qualité, dossier) ; le backend revérifie tout.
+  async function handleRetry(entry: HistoryEntry) {
+    const error = await startDownload({
+      url: entry.sourceUrl,
+      title: entry.title,
+      formatId: entry.formatId,
+      outputDir: entry.outputDir
+    });
+    if (error) {
+      toasts.error({ title: 'Relance impossible', message: error });
     }
   }
 
@@ -210,7 +245,7 @@
           <p class="download-start-error" role="alert">{downloadStartError}</p>
         {/if}
       </section>
-    {:else if !currentError && !activeDownload}
+    {:else if !currentError && !activeDownload && history.entries.length === 0}
       <section class="panel sources" aria-labelledby="sources-heading">
         <h2 id="sources-heading" class="sources-heading">Sources prises en charge</h2>
         <dl class="sources-list">
@@ -262,6 +297,10 @@
           onDismiss={handleDismissDownload}
         />
       </section>
+    {/if}
+
+    {#if history.entries.length > 0}
+      <DownloadHistory onRetry={handleRetry} retryDisabled={isDownloading} />
     {/if}
   </main>
 </div>
@@ -350,7 +389,8 @@
     width: 100%;
     max-width: 760px;
     margin: 0 auto;
-    padding: var(--space-8) var(--space-6) var(--space-12);
+    /* Marge basse : le bas de page défile au-dessus d'un toast affiché en bas à droite. */
+    padding: var(--space-8) var(--space-6) calc(var(--space-12) + 72px);
     display: flex;
     flex-direction: column;
     gap: var(--space-6);

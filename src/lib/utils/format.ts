@@ -74,3 +74,29 @@ export function formatDuration(seconds: number | null | undefined): string {
 
   return `${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
 }
+
+const RELATIVE_TIME = new Intl.RelativeTimeFormat('fr', { numeric: 'auto' });
+const ABSOLUTE_DATE = new Intl.DateTimeFormat('fr-FR', { dateStyle: 'medium', timeStyle: 'short' });
+
+/**
+ * Formate une date passée de façon relative (« il y a 5 minutes », « hier »), puis en date
+ * absolue au-delà d'une semaine.
+ */
+export function formatRelativeDate(isoDate: string, now: Date = new Date()): string {
+  const date = new Date(isoDate);
+  if (isNaN(date.getTime())) return '';
+
+  const seconds = Math.round((date.getTime() - now.getTime()) / 1000);
+  const abs = Math.abs(seconds);
+  if (abs < 60) return "à l'instant";
+  if (abs < 3600) return RELATIVE_TIME.format(Math.round(seconds / 60), 'minute');
+  if (abs < 86400) return RELATIVE_TIME.format(Math.round(seconds / 3600), 'hour');
+  if (abs < 7 * 86400) return RELATIVE_TIME.format(Math.round(seconds / 86400), 'day');
+  return ABSOLUTE_DATE.format(date);
+}
+
+/** Date complète, pour une info-bulle. */
+export function formatFullDate(isoDate: string): string {
+  const date = new Date(isoDate);
+  return isNaN(date.getTime()) ? '' : ABSOLUTE_DATE.format(date);
+}
