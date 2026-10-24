@@ -13,39 +13,58 @@ pub const EXTENSION_SERVER_PORT: u16 = 42124;
 /// une sécurité absolue et d'empêcher tout accès depuis le réseau extérieur.
 pub fn start_extension_server(app: AppHandle) {
     let app_handle = Arc::new(app);
-    tokio::spawn(async move {
-        let addr = SocketAddr::from(([127, 0, 0, 1], EXTENSION_SERVER_PORT));
-        let listener = match TcpListener::bind(addr).await {
-            Ok(l) => {
-                log::info!("Serveur de pont d'extension actif sur http://{}", addr);
-                l
-            }
-            Err(e) => {
-                log::warn!(
-                    "Impossible de lier le serveur d'extension sur {} ({:?})",
-                    addr,
-                    e
-                );
-                return;
-            }
-        };
-
-        loop {
-            match listener.accept().await {
-                Ok((socket, _)) => {
-                    let app_clone = Arc::clone(&app_handle);
-                    tokio::spawn(async move {
-                        if let Err(e) = handle_client(socket, app_clone).await {
-                            log::debug!("Erreur traitement client extension : {:?}", e);
-                        }
-                    });
-                }
+    std::thread::Builder::new()
+        .name("extension-server".into())
+        .spawn(move || {
+            let rt = match tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+            {
+                Ok(r) => r,
                 Err(e) => {
-                    log::debug!("Échec d'acceptation de connexion : {:?}", e);
+                    log::warn!(
+                        "Impossible de créer le runtime Tokio pour l'extension : {:?}",
+                        e
+                    );
+                    return;
                 }
-            }
-        }
-    });
+            };
+
+            rt.block_on(async move {
+                let addr = SocketAddr::from(([127, 0, 0, 1], EXTENSION_SERVER_PORT));
+                let listener = match TcpListener::bind(addr).await {
+                    Ok(l) => {
+                        log::info!("Serveur de pont d'extension actif sur http://{}", addr);
+                        l
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "Impossible de lier le serveur d'extension sur {} ({:?})",
+                            addr,
+                            e
+                        );
+                        return;
+                    }
+                };
+
+                loop {
+                    match listener.accept().await {
+                        Ok((socket, _)) => {
+                            let app_clone = Arc::clone(&app_handle);
+                            tokio::spawn(async move {
+                                if let Err(e) = handle_client(socket, app_clone).await {
+                                    log::debug!("Erreur traitement client extension : {:?}", e);
+                                }
+                            });
+                        }
+                        Err(e) => {
+                            log::debug!("Échec d'acceptation de connexion : {:?}", e);
+                        }
+                    }
+                }
+            });
+        })
+        .expect("Échec du démarrage du thread serveur d'extension");
 }
 
 /// Requête reçue depuis l'extension de navigateur pour lancer un téléchargement.
