@@ -7,7 +7,11 @@
   import { untrack } from 'svelte';
   import { destination } from '$lib/stores/destination.svelte';
   import { createDownloadNotifier } from '$lib/stores/download-notifications';
-  import { downloads, isTerminalStatus } from '$lib/stores/downloads.svelte';
+  import {
+    downloads,
+    isTerminalStatus,
+    MAX_CONCURRENT_DOWNLOADS
+  } from '$lib/stores/downloads.svelte';
   import { history, type HistoryEntry } from '$lib/stores/history.svelte';
   import { toasts } from '$lib/stores/toasts.svelte';
   import type { CommandError, VideoMetadata } from '$lib/types/download';
@@ -18,51 +22,41 @@
   let selectedQuality = $state('best');
   let currentError = $state<CommandError | null>(null);
 
-  // Un seul téléchargement à la fois tant que la file d'attente (phase 4) n'existe pas.
-  let activeDownloadId = $state<string | null>(null);
-  let isStartingDownload = $state(false);
+  let isAdding = $state(false);
   let downloadStartError = $state<string | null>(null);
 
-  let activeDownload = $derived(
-    activeDownloadId ? (downloads.entries[activeDownloadId] ?? null) : null
-  );
-  let isDownloading = $derived(
-    isStartingDownload || (activeDownload !== null && !isTerminalStatus(activeDownload.status))
+  let finishedCount = $derived(
+    downloads.ordered.filter((entry) => isTerminalStatus(entry.status)).length
   );
 
-  // Notifications du cycle de vie du téléchargement actif
+  // Notifications du cycle de vie de chaque téléchargement de la file
   const notifyDownload = createDownloadNotifier();
 
   $effect(() => {
-    const entry = activeDownload;
-    if (!entry) return;
-    // Champs dont l'évolution peut produire une notification : seuls ceux-ci relancent l'effet.
-    void [entry.status, entry.progressPercentage, entry.filePath, entry.errorMessage];
-    // Le notificateur lit et modifie la liste des toasts : hors suivi pour ne pas boucler.
-    untrack(() => notifyDownload(entry));
+    for (const entry of downloads.ordered) {
+      // Champs dont l'évolution peut produire une notification : seuls ceux-ci relancent l'effet.
+      void [entry.status, entry.progressPercentage, entry.filePath, entry.errorMessage];
+      // Le notificateur lit et modifie la liste des toasts : hors suivi pour ne pas boucler.
+      untrack(() => notifyDownload(entry));
+    }
   });
 
   /**
-   * Lance un téléchargement (nouveau ou relancé depuis l'historique).
-   * Renvoie le message d'erreur si le lancement lui-même échoue.
+   * Ajoute un téléchargement à la file (nouveau ou relancé depuis l'historique).
+   * Renvoie le message d'erreur si l'ajout lui-même échoue.
    */
-  async function startDownload(params: {
+  async function addDownload(params: {
     url: string;
     title: string;
     formatId: string;
     outputDir?: string;
   }): Promise<string | null> {
-    if (isDownloading) return null;
-
-    isStartingDownload = true;
-    if (activeDownloadId) {
-      downloads.dismiss(activeDownloadId);
-    }
-
+    isAdding = true;
     try {
-      activeDownloadId = await downloads.start(params.url, params.title, {
-        outputDir: params.outputDir,
+      await downloads.enqueue(params.title, {
+        url: params.url,
         formatId: params.formatId,
+        outputDir: params.outputDir,
         fileName: params.title
       });
       if (params.outputDir) {
@@ -70,17 +64,16 @@
       }
       return null;
     } catch (err: unknown) {
-      activeDownloadId = null;
       return formatErrorMessage(err);
     } finally {
-      isStartingDownload = false;
+      isAdding = false;
     }
   }
 
   async function handleDownload() {
-    if (!inspectedVideo) return;
+    if (!inspectedVideo || isAdding) return;
     downloadStartError = null;
-    downloadStartError = await startDownload({
+    downloadStartError = await addDownload({
       url: inspectedVideo.source_url,
       title: inspectedVideo.title,
       formatId: selectedQuality,
@@ -90,7 +83,7 @@
 
   // Relance avec les mêmes réglages qu'à l'origine (qualité, dossier) ; le backend revérifie tout.
   async function handleRetry(entry: HistoryEntry) {
-    const error = await startDownload({
+    const error = await addDownload({
       url: entry.sourceUrl,
       title: entry.title,
       formatId: entry.formatId,
@@ -101,39 +94,24 @@
     }
   }
 
-  function handleCancelDownload() {
-    if (activeDownloadId) {
-      downloads.cancel(activeDownloadId);
-    }
-  }
+  // Lampe d'état de l'en-tête : vue d'ensemble de la file, lisible d'un coup d'œil.
+  let lampState = $derived<'idle' | 'active'>(downloads.runningCount > 0 ? 'active' : 'idle');
 
-  function handleDismissDownload() {
-    if (!activeDownloadId) return;
-    downloads.dismiss(activeDownloadId);
-    activeDownloadId = null;
-  }
+  let deviceStatus = $derived.by(() => {
+    const running = downloads.runningCount;
+    if (running > 1) return `${running} captures en cours`;
+    if (running === 1) return 'Capture en cours';
+    return downloads.waitingCount > 0 ? 'En attente' : 'Prêt';
+  });
 
-  // Lampe d'état de l'en-tête : vue d'ensemble de la capture, lisible d'un coup d'œil.
-  type LampState = 'idle' | 'active' | 'completed' | 'failed';
-  const LAMP_LABELS: Record<LampState, string> = {
-    idle: 'Prêt',
-    active: 'Capture en cours',
-    completed: 'Terminé',
-    failed: 'Échec'
-  };
-
-  let lampState = $derived.by((): LampState => {
-    if (!activeDownload) return isStartingDownload ? 'active' : 'idle';
-    switch (activeDownload.status) {
-      case 'completed':
-        return 'completed';
-      case 'failed':
-        return 'failed';
-      case 'cancelled':
-        return 'idle';
-      default:
-        return 'active';
-    }
+  let queueSummary = $derived.by(() => {
+    const parts: string[] = [];
+    if (downloads.runningCount > 0) parts.push(`${downloads.runningCount} en cours`);
+    if (downloads.waitingCount > 0) parts.push(`${downloads.waitingCount} en attente`);
+    const paused = downloads.ordered.filter((e) => e.status === 'paused').length;
+    if (paused > 0) parts.push(`${paused} en pause`);
+    if (finishedCount > 0) parts.push(`${finishedCount} terminé${finishedCount > 1 ? 's' : ''}`);
+    return parts.join(' · ');
   });
 
   function handleInspect(metadata: VideoMetadata) {
@@ -164,7 +142,7 @@
       <span class="lamp" data-state={lampState} aria-hidden="true"></span>
       <h1 class="wordmark">ktk-download</h1>
     </div>
-    <p class="device-status" data-state={lampState}>{LAMP_LABELS[lampState]}</p>
+    <p class="device-status" data-state={lampState}>{deviceStatus}</p>
   </header>
 
   <main class="app-main">
@@ -173,7 +151,6 @@
         onInspect={handleInspect}
         onError={handleError}
         onClear={handleClear}
-        disabled={isDownloading}
         autofocus={true}
       />
     </section>
@@ -208,19 +185,13 @@
               options={inspectedVideo.available_formats}
               value={selectedQuality}
               onChange={(formatId) => (selectedQuality = formatId)}
-              disabled={isDownloading}
             />
           {/if}
 
           <div class="output-row">
-            <DestinationPicker disabled={isDownloading} />
+            <DestinationPicker />
 
-            <button
-              type="button"
-              class="download-btn"
-              onclick={handleDownload}
-              disabled={isDownloading}
-            >
+            <button type="button" class="download-btn" onclick={handleDownload} disabled={isAdding}>
               <svg
                 width="16"
                 height="16"
@@ -236,7 +207,12 @@
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
               </svg>
-              <span>{isDownloading ? 'Téléchargement…' : 'Télécharger'}</span>
+              <!-- Emplacements tous occupés : le téléchargement attendra son tour dans la file -->
+              <span>
+                {downloads.runningCount >= MAX_CONCURRENT_DOWNLOADS
+                  ? 'Ajouter à la file'
+                  : 'Télécharger'}
+              </span>
             </button>
           </div>
         </div>
@@ -245,7 +221,7 @@
           <p class="download-start-error" role="alert">{downloadStartError}</p>
         {/if}
       </section>
-    {:else if !currentError && !activeDownload && history.entries.length === 0}
+    {:else if !currentError && downloads.ordered.length === 0 && history.entries.length === 0}
       <section class="panel sources" aria-labelledby="sources-heading">
         <h2 id="sources-heading" class="sources-heading">Sources prises en charge</h2>
         <dl class="sources-list">
@@ -289,18 +265,45 @@
       </section>
     {/if}
 
-    {#if activeDownload}
-      <section class="section-download" aria-label="Téléchargement">
-        <DownloadProgress
-          entry={activeDownload}
-          onCancel={handleCancelDownload}
-          onDismiss={handleDismissDownload}
-        />
+    {#if downloads.ordered.length > 0}
+      <section class="queue" aria-labelledby="queue-heading">
+        <header class="queue-header">
+          <h2 id="queue-heading" class="queue-heading">
+            File d'attente <span class="queue-summary">{queueSummary}</span>
+          </h2>
+          {#if finishedCount > 0}
+            <button
+              type="button"
+              class="queue-clear-btn"
+              onclick={() => downloads.dismissFinished()}
+            >
+              Retirer les terminés
+            </button>
+          {/if}
+        </header>
+
+        <ol class="queue-list">
+          {#each downloads.ordered as entry, index (entry.id)}
+            <li>
+              <DownloadProgress
+                {entry}
+                onCancel={() => downloads.cancel(entry.id)}
+                onDismiss={() => downloads.dismiss(entry.id)}
+                onPause={() => downloads.pause(entry.id)}
+                onResume={() => downloads.resume(entry.id)}
+                onMoveUp={index > 0 ? () => downloads.move(entry.id, -1) : undefined}
+                onMoveDown={index < downloads.ordered.length - 1
+                  ? () => downloads.move(entry.id, 1)
+                  : undefined}
+              />
+            </li>
+          {/each}
+        </ol>
       </section>
     {/if}
 
     {#if history.entries.length > 0}
-      <DownloadHistory onRetry={handleRetry} retryDisabled={isDownloading} />
+      <DownloadHistory onRetry={handleRetry} />
     {/if}
   </main>
 </div>
@@ -355,14 +358,6 @@
     animation: lamp-pulse 1.4s ease-in-out infinite;
   }
 
-  .lamp[data-state='completed'] {
-    background-color: var(--color-success-meter);
-  }
-
-  .lamp[data-state='failed'] {
-    background-color: var(--color-danger);
-  }
-
   .device-status {
     font-family: var(--font-mono);
     font-size: var(--text-2xs);
@@ -377,14 +372,6 @@
     color: var(--color-accent-strong);
   }
 
-  .device-status[data-state='completed'] {
-    color: var(--color-success);
-  }
-
-  .device-status[data-state='failed'] {
-    color: var(--color-danger);
-  }
-
   .app-main {
     width: 100%;
     max-width: 760px;
@@ -394,6 +381,63 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
+  }
+
+  /* File d'attente */
+  .queue {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .queue-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    padding: 0 var(--space-1);
+  }
+
+  .queue-heading {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    font-size: var(--text-sm);
+    font-weight: 650;
+    color: var(--color-text);
+  }
+
+  .queue-summary {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+
+  .queue-clear-btn {
+    min-height: 28px;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-md);
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .queue-clear-btn:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .queue-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    list-style: none;
   }
 
   .panel {

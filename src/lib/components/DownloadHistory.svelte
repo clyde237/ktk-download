@@ -6,11 +6,9 @@
 
   interface Props {
     onRetry: (entry: HistoryEntry) => void;
-    /** Relance impossible pendant un téléchargement (un seul à la fois). */
-    retryDisabled?: boolean;
   }
 
-  let { onRetry, retryDisabled = false }: Props = $props();
+  let { onRetry }: Props = $props();
 
   const COLLAPSED_COUNT = 6;
   // Délai pendant lequel « Effacer » attend une confirmation
@@ -116,12 +114,7 @@
               Ouvrir le dossier<span class="visually-hidden"> de « {entry.title} »</span>
             </button>
           {/if}
-          <button
-            type="button"
-            class="item-btn"
-            onclick={() => onRetry(entry)}
-            disabled={retryDisabled}
-          >
+          <button type="button" class="item-btn" onclick={() => onRetry(entry)}>
             Relancer<span class="visually-hidden"> « {entry.title} »</span>
           </button>
           <button

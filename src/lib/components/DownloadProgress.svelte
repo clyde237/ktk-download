@@ -1,23 +1,35 @@
 <script lang="ts">
-  import { isTerminalStatus, type DownloadEntry } from '../stores/downloads.svelte';
+  import {
+    isRunningStatus,
+    isTerminalStatus,
+    type DownloadEntry
+  } from '../stores/downloads.svelte';
   import { formatBytes, formatDuration, formatSpeed } from '../utils/format';
 
   interface Props {
     entry: DownloadEntry;
     onCancel?: () => void;
     onDismiss?: () => void;
+    onPause?: () => void;
+    onResume?: () => void;
+    /** Absents quand l'élément est déjà en tête (ou en fin) de file. */
+    onMoveUp?: () => void;
+    onMoveDown?: () => void;
   }
 
-  let { entry, onCancel, onDismiss }: Props = $props();
+  let { entry, onCancel, onDismiss, onPause, onResume, onMoveUp, onMoveDown }: Props = $props();
 
   let isActive = $derived(!isTerminalStatus(entry.status));
+  let isRunning = $derived(isRunningStatus(entry.status));
+  // L'ordre ne compte que pour ce qui n'a pas encore démarré ou reprendra plus tard.
+  let canReorder = $derived(entry.status === 'waiting' || entry.status === 'paused');
 
   // yt-dlp reste à 100 % pendant la fusion audio/vidéo, avant l'événement `completed`.
   let isFinalizing = $derived(entry.status === 'downloading' && entry.progressPercentage >= 100);
 
   // Sans taille totale ni pourcentage, aucune progression mesurable : barre indéterminée.
   let isIndeterminate = $derived(
-    isActive &&
+    isRunning &&
       (entry.status === 'queued' ||
         entry.status === 'processing' ||
         isFinalizing ||
@@ -31,11 +43,17 @@
   let percentageLabel = $derived(`${percentage.toFixed(1)} %`);
 
   // Compteur affiché : tirets tant qu'aucune mesure n'est possible, comme un afficheur en veille.
-  let readout = $derived(isIndeterminate ? '--.- %' : percentageLabel);
+  let hasNoMeasure = $derived(isIndeterminate || (entry.status === 'waiting' && percentage <= 0));
+  let readout = $derived(hasNoMeasure ? '--.- %' : percentageLabel);
 
   let statusLabel = $derived.by(() => {
     if (isActive && entry.cancelRequested) return 'Annulation…';
+    if (isRunning && entry.pauseRequested) return 'Mise en pause…';
     switch (entry.status) {
+      case 'waiting':
+        return "En file d'attente";
+      case 'paused':
+        return 'En pause';
       case 'queued':
         return 'Préparation…';
       case 'downloading':
@@ -70,6 +88,7 @@
   class:is-completed={entry.status === 'completed'}
   class:is-failed={entry.status === 'failed'}
   class:is-cancelled={entry.status === 'cancelled'}
+  class:is-on-hold={entry.status === 'waiting' || entry.status === 'paused'}
   aria-label="Téléchargement de {entry.title}"
 >
   <header class="card-header">
@@ -117,31 +136,97 @@
             <circle cx="12" cy="12" r="10" />
             <line x1="4.93" y1="4.93" x2="19.07" y2="19.07" />
           </svg>
-        {:else}
+        {:else if isRunning}
           <span class="rec-dot"></span>
+        {:else}
+          <span class="hold-dot"></span>
         {/if}
       </span>
       <span class="status-label">{statusLabel}</span>
     </p>
 
-    {#if isActive}
-      <button
-        type="button"
-        class="card-btn cancel-btn"
-        onclick={onCancel}
-        disabled={entry.cancelRequested}
-      >
-        Annuler
-      </button>
-    {:else}
-      <button type="button" class="card-btn dismiss-btn" onclick={onDismiss}>Fermer</button>
-    {/if}
+    <div class="card-actions">
+      {#if canReorder}
+        <button
+          type="button"
+          class="icon-btn"
+          onclick={onMoveUp}
+          disabled={!onMoveUp}
+          aria-label="Monter « {entry.title} » dans la file"
+          title="Monter dans la file"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="18 15 12 9 6 15" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="icon-btn"
+          onclick={onMoveDown}
+          disabled={!onMoveDown}
+          aria-label="Descendre « {entry.title} » dans la file"
+          title="Descendre dans la file"
+        >
+          <svg
+            width="14"
+            height="14"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2.2"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+      {/if}
+
+      {#if entry.status === 'paused'}
+        <button type="button" class="card-btn" onclick={onResume} disabled={entry.cancelRequested}>
+          Reprendre
+        </button>
+      {:else if isActive}
+        <button
+          type="button"
+          class="card-btn"
+          onclick={onPause}
+          disabled={entry.pauseRequested || entry.cancelRequested}
+        >
+          Pause
+        </button>
+      {/if}
+
+      {#if isActive}
+        <button
+          type="button"
+          class="card-btn cancel-btn"
+          onclick={onCancel}
+          disabled={entry.cancelRequested}
+        >
+          Annuler
+        </button>
+      {:else}
+        <button type="button" class="card-btn dismiss-btn" onclick={onDismiss}>Fermer</button>
+      {/if}
+    </div>
   </header>
 
   <p class="download-title" title={entry.title}>{entry.title}</p>
 
   <div class="readout-row">
-    <span class="readout" class:is-idle={isIndeterminate} aria-hidden="true">{readout}</span>
+    <span class="readout" class:is-idle={hasNoMeasure} aria-hidden="true">{readout}</span>
     <span class="stats">
       {#if sizeLabel}
         <span class="stat">{sizeLabel}</span>
@@ -206,6 +291,11 @@
     --status-color: var(--color-danger);
   }
 
+  .download-card.is-on-hold {
+    --meter-color: var(--color-border-strong);
+    --status-color: var(--color-text-muted);
+  }
+
   .download-card.is-cancelled {
     --meter-color: var(--color-border-strong);
     --status-color: var(--color-text-muted);
@@ -242,6 +332,44 @@
     border-radius: var(--radius-full);
     background-color: var(--color-accent);
     animation: blink 1.4s ease-in-out infinite;
+  }
+
+  /* Voyant éteint : en attente ou en pause */
+  .hold-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-full);
+    border: 2px solid currentColor;
+  }
+
+  .card-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex-shrink: 0;
+  }
+
+  .icon-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    color: var(--color-text-muted);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .icon-btn:hover:not(:disabled) {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .icon-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
   }
 
   .status-label {

@@ -12,6 +12,7 @@ export type CommandErrorKind =
   | 'FileSystemError'
   | 'DownloadFailed'
   | 'DownloadCancelled'
+  | 'DownloadPaused'
   | 'Internal';
 
 export interface CommandError {
@@ -64,7 +65,7 @@ export interface DownloadRequest {
  * État d'avancement d'un téléchargement.
  */
 export type DownloadStatus =
-  'queued' | 'downloading' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  'queued' | 'downloading' | 'processing' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Charge utile de l'événement Tauri `download-progress`.
