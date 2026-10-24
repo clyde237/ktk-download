@@ -300,11 +300,20 @@ class DownloadStore {
     }
   }
 
-  /** Avance (`-1`) ou recule (`+1`) un élément d'une place dans la file. */
+  /** Avance (`-1`) ou recule (`+1`) un élément d'une place parmi les téléchargements actifs. */
   move(id: string, offset: -1 | 1) {
     const index = this.order.indexOf(id);
-    const target = index + offset;
-    if (index < 0 || target < 0 || target >= this.order.length) return;
+    if (index < 0) return;
+    // Les téléchargements terminés ne sont plus affichés dans la file : ils sont sautés.
+    let target = index + offset;
+    while (
+      target >= 0 &&
+      target < this.order.length &&
+      isTerminalStatus(this.entries[this.order[target]]?.status ?? 'completed')
+    ) {
+      target += offset;
+    }
+    if (target < 0 || target >= this.order.length) return;
     [this.order[index], this.order[target]] = [this.order[target], this.order[index]];
   }
 
