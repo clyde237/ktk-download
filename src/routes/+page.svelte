@@ -40,6 +40,83 @@
     format_id?: string | null;
   }
 
+  interface PendingExtensionDownload {
+    url: string;
+    title: string;
+    formatId: string;
+  }
+
+  let pendingExtensionDownload = $state<PendingExtensionDownload | null>(null);
+  let modalSelectedFormat = $state('best');
+  let modalOutputDir = $state<string | undefined>(undefined);
+
+  const MODAL_FORMAT_PRESETS = [
+    { id: 'best', label: '⚡ Meilleure qualité (Auto)' },
+    { id: '1080p', label: '🎬 1080p Full HD' },
+    { id: '720p', label: '🎬 720p HD' },
+    { id: '480p', label: '🎬 480p SD' },
+    { id: 'mp3', label: '🎵 Audio seul (MP3)' }
+  ];
+
+  let modalAvailableFormats = $derived.by(() => {
+    const list = [...MODAL_FORMAT_PRESETS];
+    if (
+      pendingExtensionDownload?.formatId &&
+      !list.some((f) => f.id === pendingExtensionDownload?.formatId)
+    ) {
+      list.unshift({
+        id: pendingExtensionDownload.formatId,
+        label: `Format sélectionné (${pendingExtensionDownload.formatId})`
+      });
+    }
+    return list;
+  });
+
+  async function confirmExtensionDownload() {
+    if (!pendingExtensionDownload) return;
+    const item = pendingExtensionDownload;
+    const chosenFormat = modalSelectedFormat;
+    const chosenDir = modalOutputDir;
+    pendingExtensionDownload = null;
+
+    const error = await addDownload({
+      url: item.url,
+      title: item.title,
+      formatId: chosenFormat,
+      outputDir: chosenDir
+    });
+
+    if (error) {
+      toasts.error({
+        title: 'Échec de capture extension',
+        message: error
+      });
+    } else {
+      toasts.success({
+        title: 'Téléchargement lancé',
+        message: `${item.title} a été ajouté à la file d’attente.`
+      });
+    }
+  }
+
+  function cancelExtensionDownload() {
+    pendingExtensionDownload = null;
+  }
+
+  async function handleModalBrowse() {
+    try {
+      const picked = await destination.browse();
+      if (picked && destination.selected) {
+        modalOutputDir = destination.selected;
+      }
+    } catch (err: unknown) {
+      toasts.error({
+        title: 'Dossier de destination',
+        message: `Impossible d'ouvrir le sélecteur : ${formatErrorMessage(err)}`
+      });
+    }
+  }
+
   onMount(() => {
     let unlisten: UnlistenFn | undefined;
     void listen<ExtensionDownloadPayload>('extension-download', (event) => {
@@ -47,24 +124,13 @@
       const title = payload.title?.trim() || 'Vidéo web';
       const formatId = payload.format_id?.trim() || 'best';
 
-      void addDownload({
+      modalSelectedFormat = formatId;
+      modalOutputDir = destination.selected ?? destination.defaultFolder ?? undefined;
+      pendingExtensionDownload = {
         url: payload.url,
         title,
-        formatId,
-        outputDir: destination.selected ?? undefined
-      }).then((error) => {
-        if (error) {
-          toasts.error({
-            title: 'Échec de capture extension',
-            message: error
-          });
-        } else {
-          toasts.success({
-            title: 'Capture vidéo détectée',
-            message: `${title} a été ajouté à la file d’attente.`
-          });
-        }
-      });
+        formatId
+      };
     }).then((fn) => {
       unlisten = fn;
     });
@@ -494,6 +560,149 @@
       <DownloadHistory onRetry={handleRetry} />
     {/if}
   </main>
+
+  {#if pendingExtensionDownload}
+    <div
+      class="modal-backdrop"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="modal-title"
+      tabindex="-1"
+      onkeydown={(e) => {
+        if (e.key === 'Escape') cancelExtensionDownload();
+      }}
+    >
+      <div class="modal-card">
+        <div class="modal-header">
+          <div class="modal-icon-badge" aria-hidden="true">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+          </div>
+          <div class="modal-header-text">
+            <h2 id="modal-title" class="modal-title">Lancer le téléchargement ?</h2>
+            <p class="modal-subtitle">Demande reçue depuis l'extension du navigateur</p>
+          </div>
+          <button
+            type="button"
+            class="modal-close-btn"
+            onclick={cancelExtensionDownload}
+            aria-label="Fermer et annuler"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="modal-body">
+          <div class="modal-field">
+            <span class="modal-label">Titre</span>
+            <div class="modal-value modal-title-value" title={pendingExtensionDownload.title}>
+              {pendingExtensionDownload.title}
+            </div>
+          </div>
+
+          <div class="modal-field">
+            <span class="modal-label">Lien source</span>
+            <div class="modal-value modal-url-value" title={pendingExtensionDownload.url}>
+              {pendingExtensionDownload.url}
+            </div>
+          </div>
+
+          <div class="modal-options-grid">
+            <div class="modal-field">
+              <label for="modal-format-select" class="modal-label">Format / Qualité</label>
+              <select
+                id="modal-format-select"
+                class="modal-select"
+                bind:value={modalSelectedFormat}
+              >
+                {#each modalAvailableFormats as fmt}
+                  <option value={fmt.id}>{fmt.label}</option>
+                {/each}
+              </select>
+            </div>
+
+            <div class="modal-field">
+              <span class="modal-label">Dossier de destination</span>
+              <div class="modal-folder-row">
+                <span
+                  class="modal-folder-path"
+                  title={modalOutputDir ?? destination.defaultFolder ?? 'Dossier par défaut'}
+                >
+                  {modalOutputDir
+                    ? destination.displayPath(modalOutputDir)
+                    : destination.defaultFolder
+                      ? destination.displayPath(destination.defaultFolder)
+                      : 'Téléchargements (par défaut)'}
+                </span>
+                <button
+                  type="button"
+                  class="modal-browse-btn"
+                  onclick={handleModalBrowse}
+                  title="Choisir un autre dossier"
+                >
+                  Modifier…
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="modal-btn-cancel" onclick={cancelExtensionDownload}>
+            Annuler
+          </button>
+          <button
+            type="button"
+            class="modal-btn-confirm"
+            onclick={confirmExtensionDownload}
+            disabled={isAdding}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+              <polyline points="7 10 12 15 17 10" />
+              <line x1="12" y1="15" x2="12" y2="3" />
+            </svg>
+            <span>Démarrer le téléchargement</span>
+          </button>
+        </div>
+      </div>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -1117,6 +1326,283 @@
     .source-row {
       grid-template-columns: 1fr;
       gap: var(--space-1);
+    }
+  }
+
+  /* Modal de confirmation de capture extension */
+  .modal-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    background-color: rgba(15, 23, 42, 0.45);
+    backdrop-filter: blur(4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-4);
+    animation: fadeIn 0.15s ease-out;
+  }
+
+  .modal-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg, 12px);
+    box-shadow:
+      0 20px 25px -5px rgba(0, 0, 0, 0.1),
+      0 8px 10px -6px rgba(0, 0, 0, 0.05);
+    width: 100%;
+    max-width: 520px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    animation: modalPop 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .modal-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+    border-bottom: 1px solid var(--color-border);
+    background: var(--color-surface-sunken);
+  }
+
+  .modal-icon-badge {
+    width: 36px;
+    height: 36px;
+    border-radius: 8px;
+    background: var(--color-accent-wash);
+    color: var(--color-accent-strong);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .modal-header-text {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .modal-title {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--color-text);
+    margin: 0;
+    line-height: 1.25;
+  }
+
+  .modal-subtitle {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin-top: 2px;
+  }
+
+  .modal-close-btn {
+    background: transparent;
+    border: none;
+    padding: 6px;
+    border-radius: var(--radius-md, 6px);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition:
+      background-color 0.15s ease,
+      color 0.15s ease;
+  }
+
+  .modal-close-btn:hover {
+    background: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .modal-body {
+    padding: var(--space-5);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+
+  .modal-field {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .modal-label {
+    font-size: var(--text-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+  }
+
+  .modal-value {
+    background: var(--color-surface-sunken);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 10px;
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .modal-title-value {
+    font-weight: 600;
+  }
+
+  .modal-url-value {
+    font-family: var(--font-mono);
+    font-size: var(--text-xs);
+    color: var(--color-text-subtle);
+  }
+
+  .modal-options-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-3);
+  }
+
+  .modal-select {
+    width: 100%;
+    padding: 8px 10px;
+    border-radius: var(--radius-md, 6px);
+    border: 1px solid var(--color-border-strong);
+    background: var(--color-surface);
+    color: var(--color-text);
+    font-family: inherit;
+    font-size: var(--text-sm);
+    font-weight: 500;
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease;
+  }
+
+  .modal-select:focus {
+    border-color: var(--color-focus);
+  }
+
+  .modal-folder-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    background: var(--color-surface-sunken);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 6px);
+    padding: 4px 6px;
+  }
+
+  .modal-folder-path {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding-left: 4px;
+  }
+
+  .modal-browse-btn {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 4px);
+    padding: 4px 8px;
+    font-size: var(--text-xs);
+    font-weight: 600;
+    color: var(--color-text);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color 0.15s ease;
+  }
+
+  .modal-browse-btn:hover {
+    background: var(--color-surface-hover);
+  }
+
+  .modal-footer {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-3);
+    padding: var(--space-4) var(--space-5);
+    border-top: 1px solid var(--color-border);
+    background: var(--color-surface-sunken);
+  }
+
+  .modal-btn-cancel {
+    background: transparent;
+    border: 1px solid var(--color-border);
+    color: var(--color-text);
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 16px;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+  }
+
+  .modal-btn-cancel:hover {
+    background: var(--color-surface-hover);
+  }
+
+  .modal-btn-confirm {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    border: none;
+    border-radius: var(--radius-md, 6px);
+    padding: 8px 18px;
+    font-size: var(--text-sm);
+    font-weight: 700;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    transition:
+      background-color 0.15s ease,
+      transform 0.05s ease;
+  }
+
+  .modal-btn-confirm:hover {
+    background: var(--color-accent-strong);
+  }
+
+  .modal-btn-confirm:active {
+    transform: scale(0.98);
+  }
+
+  .modal-btn-confirm:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes modalPop {
+    from {
+      opacity: 0;
+      transform: scale(0.95) translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .modal-options-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

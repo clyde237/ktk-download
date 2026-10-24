@@ -211,6 +211,28 @@ body {
   padding-top: 4px;
 }
 
+.quality-select {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  background-color: var(--bg-subtle);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 5px 8px;
+  outline: none;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.quality-select:hover,
+.quality-select:focus {
+  border-color: var(--primary);
+  background-color: #ffffff;
+}
+
 .btn {
   display: inline-flex;
   align-items: center;

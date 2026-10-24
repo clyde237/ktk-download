@@ -6,6 +6,7 @@
 const browserAPI = globalThis.browser ?? globalThis.chrome;
 
 let currentTabId = null;
+let currentTabUrl = null;
 let currentMediaList = [];
 
 /**
@@ -110,6 +111,33 @@ function renderMediaList(mediaList) {
     const actions = document.createElement('div');
     actions.className = 'media-card-actions';
 
+    const qualitySelect = document.createElement('select');
+    qualitySelect.className = 'quality-select';
+    qualitySelect.title = 'Format / Qualité';
+
+    const formatOptions = [
+      { id: '1080p', label: '1080p (Full HD)' },
+      { id: '720p', label: '720p (HD)' },
+      { id: '480p', label: '480p (SD)' },
+      { id: 'mp3', label: 'Audio MP3' },
+      { id: 'best', label: 'Meilleure qualité' }
+    ];
+
+    let preselected = 'best';
+    if (media.resolution) {
+      if (media.resolution.includes('1080')) preselected = '1080p';
+      else if (media.resolution.includes('720')) preselected = '720p';
+      else if (media.resolution.includes('480')) preselected = '480p';
+    }
+
+    formatOptions.forEach((opt) => {
+      const optEl = document.createElement('option');
+      optEl.value = opt.id;
+      optEl.textContent = opt.label;
+      if (opt.id === preselected) optEl.selected = true;
+      qualitySelect.appendChild(optEl);
+    });
+
     const downloadBtn = document.createElement('button');
     downloadBtn.className = 'btn btn-primary btn-sm';
     downloadBtn.innerHTML = `
@@ -122,17 +150,23 @@ function renderMediaList(mediaList) {
     downloadBtn.addEventListener('click', async () => {
       downloadBtn.disabled = true;
       downloadBtn.innerHTML = `<span>Envoi...</span>`;
+      const chosenFormat = qualitySelect.value || 'best';
+      const targetUrl =
+        !media.url || media.url.startsWith('blob:') || media.url.startsWith('data:')
+          ? currentTabUrl || media.url
+          : media.url;
+
       try {
         const res = await browserAPI.runtime.sendMessage({
           type: 'TRIGGER_DOWNLOAD',
           payload: {
-            url: media.url,
+            url: targetUrl,
             title: media.title,
-            formatId: media.resolution ? `${media.resolution}` : 'best'
+            formatId: chosenFormat
           }
         });
         if (res && res.success) {
-          downloadBtn.innerHTML = `<span>✓ Ajouté</span>`;
+          downloadBtn.innerHTML = `<span>✓ Transmis</span>`;
         } else {
           downloadBtn.innerHTML = `<span>Échec</span>`;
           downloadBtn.title = res?.error || 'Erreur inconnue';
@@ -142,11 +176,17 @@ function renderMediaList(mediaList) {
       } finally {
         setTimeout(() => {
           downloadBtn.disabled = false;
-          downloadBtn.innerHTML = `<span>Télécharger</span>`;
+          downloadBtn.innerHTML = `
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor">
+              <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+            </svg>
+            <span>Télécharger</span>
+          `;
         }, 2000);
       }
     });
 
+    actions.appendChild(qualitySelect);
     actions.appendChild(downloadBtn);
 
     card.appendChild(header);
@@ -164,6 +204,7 @@ async function loadTabMedia() {
   if (!tabs || tabs.length === 0) return;
 
   currentTabId = tabs[0].id;
+  currentTabUrl = tabs[0].url || null;
   const res = await browserAPI.runtime.sendMessage({
     type: 'GET_TAB_MEDIA',
     tabId: currentTabId
@@ -184,10 +225,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnDownloadAll.textContent = 'Envoi...';
 
     for (const item of currentMediaList) {
+      const targetUrl =
+        !item.url || item.url.startsWith('blob:') || item.url.startsWith('data:')
+          ? currentTabUrl || item.url
+          : item.url;
       await browserAPI.runtime.sendMessage({
         type: 'TRIGGER_DOWNLOAD',
         payload: {
-          url: item.url,
+          url: targetUrl,
           title: item.title,
           formatId: item.resolution ? `${item.resolution}` : 'best'
         }

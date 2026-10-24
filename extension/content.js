@@ -15,6 +15,29 @@
   const trackedVideos = new Map();
 
   /**
+   * Résout une URL exploitable par le moteur de téléchargement externe (yt-dlp).
+   * Les protocoles locaux in-memory comme "blob:" et "data:" ne peuvent pas être
+   * lus hors du navigateur et sont automatiquement remplacés par l'URL de la page hôte.
+   */
+  function resolveTargetUrl(video) {
+    const pageUrl = window.location.href;
+    const isPlatform =
+      /(youtube\.com|youtu\.be|vimeo\.com|dailymotion\.com|tiktok\.com|twitter\.com|x\.com|instagram\.com|facebook\.com|twitch\.tv)/i.test(
+        pageUrl
+      );
+    if (isPlatform) {
+      return pageUrl;
+    }
+
+    const candidate = video.currentSrc || video.src || getChildSource(video);
+    if (!candidate || candidate.startsWith('blob:') || candidate.startsWith('data:')) {
+      return pageUrl;
+    }
+
+    return candidate;
+  }
+
+  /**
    * Crée ou met à jour le conteneur Shadow DOM pour le bouton de téléchargement IDM.
    */
   function getOrCreateOverlay(video) {
@@ -96,6 +119,74 @@
         background: rgba(255, 255, 255, 0.25);
         color: #ffffff;
       }
+      .ktk-chevron {
+        width: 10px;
+        height: 10px;
+        fill: currentColor;
+        transition: transform 0.15s ease;
+      }
+      .ktk-btn-wrap.menu-open .ktk-chevron {
+        transform: rotate(180deg);
+      }
+      .ktk-format-dropdown {
+        display: none;
+        position: absolute;
+        top: 100%;
+        right: 0;
+        margin-top: 6px;
+        background: #ffffff;
+        border: 1px solid #cbd5e1;
+        border-radius: 8px;
+        box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.18), 0 8px 10px -6px rgba(0, 0, 0, 0.08);
+        padding: 6px;
+        min-width: 190px;
+        z-index: 2147483647;
+      }
+      .ktk-btn-wrap.menu-open .ktk-format-dropdown {
+        display: block;
+      }
+      .ktk-dropdown-header {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #64748b;
+        padding: 4px 8px 6px;
+        border-bottom: 1px solid #f1f5f9;
+        margin-bottom: 4px;
+      }
+      .ktk-format-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        width: 100%;
+        padding: 6px 8px;
+        border: none;
+        background: transparent;
+        color: #1e293b;
+        font-size: 11px;
+        font-weight: 500;
+        border-radius: 4px;
+        cursor: pointer;
+        text-align: left;
+        transition: background-color 0.1s ease, color 0.1s ease;
+      }
+      .ktk-format-item:hover {
+        background: #eff6ff;
+        color: #2563eb;
+      }
+      .ktk-item-tag {
+        font-size: 9px;
+        font-weight: 700;
+        padding: 1px 4px;
+        border-radius: 3px;
+        background: #e2e8f0;
+        color: #475569;
+      }
+      .ktk-format-item:hover .ktk-item-tag {
+        background: #dbeafe;
+        color: #1d4ed8;
+      }
       .ktk-toast {
         margin-top: 4px;
         padding: 6px 10px;
@@ -138,12 +229,42 @@
       </svg>
       <span>Télécharger</span>
       <span class="ktk-badge">ktk</span>
+      <svg class="ktk-chevron" viewBox="0 0 20 20">
+        <path d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z"/>
+      </svg>
+    `;
+
+    const dropdown = document.createElement('div');
+    dropdown.className = 'ktk-format-dropdown';
+    dropdown.innerHTML = `
+      <div class="ktk-dropdown-header">Choisir le format :</div>
+      <button class="ktk-format-item" data-format="1080p" type="button">
+        <span>🎬 1080p (Full HD)</span>
+        <span class="ktk-item-tag">1080p</span>
+      </button>
+      <button class="ktk-format-item" data-format="720p" type="button">
+        <span>🎬 720p (Haute Déf.)</span>
+        <span class="ktk-item-tag">720p</span>
+      </button>
+      <button class="ktk-format-item" data-format="480p" type="button">
+        <span>🎬 480p (Standard)</span>
+        <span class="ktk-item-tag">480p</span>
+      </button>
+      <button class="ktk-format-item" data-format="mp3" type="button">
+        <span>🎵 Audio seul (MP3)</span>
+        <span class="ktk-item-tag">Audio</span>
+      </button>
+      <button class="ktk-format-item" data-format="best" type="button">
+        <span>⚡ Meilleure qualité</span>
+        <span class="ktk-item-tag">Auto</span>
+      </button>
     `;
 
     const toast = document.createElement('div');
     toast.className = 'ktk-toast';
 
     wrap.appendChild(btn);
+    wrap.appendChild(dropdown);
     wrap.appendChild(toast);
     shadowRoot.appendChild(style);
     shadowRoot.appendChild(wrap);
@@ -154,17 +275,34 @@
       host,
       wrap,
       btn,
+      dropdown,
       toast,
       video,
       hideTimeout: null,
       updatePosition: () => positionOverlay(video, wrap)
     };
 
-    // Gestion du clic pour lancer le téléchargement
-    btn.addEventListener('click', async (e) => {
+    // Clic principal : ouvre ou ferme le menu de format
+    btn.addEventListener('click', (e) => {
       e.stopPropagation();
       e.preventDefault();
-      await handleDownloadClick(video, btn, toast);
+      wrap.classList.toggle('menu-open');
+    });
+
+    // Clic sur l'un des formats vidéo proposés
+    const formatButtons = dropdown.querySelectorAll('.ktk-format-item');
+    for (const fb of formatButtons) {
+      fb.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        const chosenFormat = fb.getAttribute('data-format') || 'best';
+        wrap.classList.remove('menu-open');
+        await handleDownloadClick(video, btn, toast, chosenFormat);
+      });
+    }
+
+    wrap.addEventListener('mouseleave', () => {
+      wrap.classList.remove('menu-open');
     });
 
     trackedVideos.set(video, overlayData);
@@ -196,19 +334,15 @@
   }
 
   /**
-   * Traitement du clic sur le bouton de téléchargement IDM.
+   * Traitement du clic sur un format de téléchargement IDM.
    */
-  async function handleDownloadClick(video, btn, toast) {
-    const mediaUrl = video.currentSrc || video.src || getChildSource(video) || window.location.href;
+  async function handleDownloadClick(video, btn, toast, formatId = 'best') {
+    const mediaUrl = resolveTargetUrl(video);
     const pageTitle = document.title || 'Vidéo web';
-    const resolution =
-      video.videoWidth && video.videoHeight
-        ? `${video.videoWidth}x${video.videoHeight}`
-        : undefined;
 
     btn.disabled = true;
     const originalText = btn.innerHTML;
-    btn.innerHTML = `<span>Envoi en cours...</span>`;
+    btn.innerHTML = `<span>Envoi (${formatId})...</span>`;
 
     try {
       const response = await browserAPI.runtime.sendMessage({
@@ -216,12 +350,16 @@
         payload: {
           url: mediaUrl,
           title: pageTitle,
-          formatId: resolution ? `${video.videoHeight}p` : 'best'
+          formatId: formatId
         }
       });
 
       if (response && response.success) {
-        showToast(toast, 'Transmis à ktk-download !', 'success');
+        showToast(
+          toast,
+          `✓ Format <b>${formatId}</b> sélectionné ! Confirmez dans l'application ktk-download.`,
+          'success'
+        );
       } else {
         const errorMsg = response?.error || 'ktk-download non connecté.';
         showToast(
@@ -237,7 +375,7 @@
       setTimeout(() => {
         btn.disabled = false;
         btn.innerHTML = originalText;
-      }, 1500);
+      }, 2000);
     }
   }
 
@@ -279,8 +417,8 @@
    * Enregistre la vidéo auprès du service worker de l'extension.
    */
   function registerVideo(video) {
-    const src = video.currentSrc || video.src || getChildSource(video);
-    if (!src) return;
+    const src = resolveTargetUrl(video);
+    if (!src || src.startsWith('blob:') || src.startsWith('data:')) return;
 
     const resolution =
       video.videoWidth && video.videoHeight ? `${video.videoWidth}x${video.videoHeight}` : null;

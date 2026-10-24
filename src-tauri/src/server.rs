@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -136,6 +136,11 @@ async fn handle_client(
 
         if let Ok(payload) = serde_json::from_str::<ExtensionDownloadPayload>(raw_body) {
             log::info!("Téléchargement reçu depuis l'extension : {:?}", payload);
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
             let _ = app.emit("extension-download", payload);
 
             let body = r#"{"success":true,"message":"Téléchargement transmis à ktk-download"}"#;

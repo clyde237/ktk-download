@@ -236,13 +236,21 @@ async function checkDesktopAppStatus() {
  */
 async function sendDownloadToApp(payload) {
   try {
+    let resolvedUrl = payload.url;
+    if (!resolvedUrl || resolvedUrl.startsWith('blob:') || resolvedUrl.startsWith('data:')) {
+      const tabs = await browserAPI.tabs.query({ active: true, currentWindow: true });
+      if (tabs && tabs[0]?.url && !tabs[0].url.startsWith('about:')) {
+        resolvedUrl = tabs[0].url;
+      }
+    }
+
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 4000);
     const res = await fetch(DOWNLOAD_ENDPOINT, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        url: payload.url,
+        url: resolvedUrl,
         title: payload.title || undefined,
         format_id: payload.formatId || undefined
       }),
