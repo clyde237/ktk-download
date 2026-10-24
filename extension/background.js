@@ -258,7 +258,8 @@ async function sendDownloadToApp(payload) {
   } catch (err) {
     return {
       success: false,
-      error: 'ktk-download n’est pas joignable sur 127.0.0.1:42124. Vérifiez que l’application de bureau est ouverte.'
+      error:
+        'ktk-download n’est pas joignable sur 127.0.0.1:42124. Vérifiez que l’application de bureau est ouverte.'
     };
   }
 }

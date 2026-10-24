@@ -201,9 +201,10 @@
   async function handleDownloadClick(video, btn, toast) {
     const mediaUrl = video.currentSrc || video.src || getChildSource(video) || window.location.href;
     const pageTitle = document.title || 'Vidéo web';
-    const resolution = video.videoWidth && video.videoHeight
-      ? `${video.videoWidth}x${video.videoHeight}`
-      : undefined;
+    const resolution =
+      video.videoWidth && video.videoHeight
+        ? `${video.videoWidth}x${video.videoHeight}`
+        : undefined;
 
     btn.disabled = true;
     const originalText = btn.innerHTML;
@@ -281,9 +282,8 @@
     const src = video.currentSrc || video.src || getChildSource(video);
     if (!src) return;
 
-    const resolution = video.videoWidth && video.videoHeight
-      ? `${video.videoWidth}x${video.videoHeight}`
-      : null;
+    const resolution =
+      video.videoWidth && video.videoHeight ? `${video.videoWidth}x${video.videoHeight}` : null;
 
     try {
       browserAPI.runtime.sendMessage({
@@ -359,19 +359,27 @@
   }
 
   // Écouteur de repositionnement lors du scroll ou resize
-  window.addEventListener('scroll', () => {
-    for (const [, overlay] of trackedVideos) {
-      if (overlay.wrap.classList.contains('visible')) {
+  window.addEventListener(
+    'scroll',
+    () => {
+      for (const [, overlay] of trackedVideos) {
+        if (overlay.wrap.classList.contains('visible')) {
+          overlay.updatePosition();
+        }
+      }
+    },
+    { passive: true }
+  );
+
+  window.addEventListener(
+    'resize',
+    () => {
+      for (const [, overlay] of trackedVideos) {
         overlay.updatePosition();
       }
-    }
-  }, { passive: true });
-
-  window.addEventListener('resize', () => {
-    for (const [, overlay] of trackedVideos) {
-      overlay.updatePosition();
-    }
-  }, { passive: true });
+    },
+    { passive: true }
+  );
 
   // Observer de mutations DOM pour les applications monopages (YouTube, Twitter, Facebook, TikTok...)
   const observer = new MutationObserver((mutations) => {

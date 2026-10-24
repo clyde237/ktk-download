@@ -110,7 +110,10 @@ pub async fn extract_metadata(
 }
 
 /// Exécute `yt-dlp --dump-single-json` et parse le JSON retourné.
-async fn extract_with_ytdlp(ytdlp_bin: &Path, url: &str) -> Result<VideoMetadata, CommandError> {
+pub async fn extract_with_ytdlp(
+    ytdlp_bin: &Path,
+    url: &str,
+) -> Result<VideoMetadata, CommandError> {
     let output = ytdlp_command(ytdlp_bin)
         .arg("--dump-single-json")
         .arg("--no-warnings")
@@ -304,6 +307,28 @@ pub async fn download_with_ytdlp<R: Runtime>(
         CommandError::Internal("Le binaire yt-dlp est introuvable sur le système.".to_string())
     })?;
 
+    download_with_ytdlp_binary(
+        app,
+        download_id,
+        url,
+        quality,
+        target_path,
+        control,
+        &ytdlp_bin,
+    )
+    .await
+}
+
+/// Télécharge une vidéo via un binaire `yt-dlp` spécifié en suivant sa progression ligne par ligne.
+pub async fn download_with_ytdlp_binary<R: Runtime>(
+    app: &AppHandle<R>,
+    download_id: &str,
+    url: &str,
+    quality: QualityPreset,
+    target_path: &Path,
+    control: Option<Arc<DownloadControl>>,
+    ytdlp_bin: &Path,
+) -> Result<(PathBuf, u64), CommandError> {
     let output = YtdlpOutput::for_target(target_path).ok_or_else(|| {
         CommandError::FileSystemError("Chemin de destination invalide.".to_string())
     })?;
@@ -323,7 +348,7 @@ pub async fn download_with_ytdlp<R: Runtime>(
     // on exige alors un format unique contenant déjà les deux flux.
     let requires_single_file = !quality.is_audio_only() && ffmpeg_bin.is_none();
 
-    let mut cmd = ytdlp_command(&ytdlp_bin);
+    let mut cmd = ytdlp_command(ytdlp_bin);
     cmd.arg("--newline")
         .arg("--no-playlist")
         .arg("--progress")
@@ -911,5 +936,363 @@ mod tests {
             ytdlp_failure_error("", false),
             CommandError::DownloadFailed(_)
         ));
+    }
+
+    fn create_mock_script(content: &str) -> PathBuf {
+        let unique = format!("ktk-mock-ytdlp-{}.sh", uuid::Uuid::new_v4());
+        let path = std::env::temp_dir().join(unique);
+        std::fs::write(&path, content).expect("Écriture du script mock yt-dlp");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&path).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&path, perms).unwrap();
+        }
+        path
+    }
+
+    #[test]
+    fn test_mock_ytdlp_extract_success() {
+        let script = r#"#!/bin/sh
+cat << 'EOF'
+{
+  "id": "mock_abc123",
+  "title": "Vidéo documentaire HD",
+  "description": "Description de test complète",
+  "uploader": "Studio Test",
+  "thumbnail": "https://example.com/thumb.jpg",
+  "duration": 185,
+  "extractor": "youtube",
+  "formats": [
+    {
+      "format_id": "137",
+      "ext": "mp4",
+      "height": 1080,
+      "width": 1920,
+      "vcodec": "avc1.640028",
+      "acodec": "none",
+      "filesize": 52428800
+    },
+    {
+      "format_id": "140",
+      "ext": "m4a",
+      "vcodec": "none",
+      "acodec": "mp4a.40.2",
+      "filesize": 5242880
+    }
+  ]
+}
+EOF
+exit 0
+"#;
+        let mock_path = create_mock_script(script);
+
+        tauri::async_runtime::block_on(async {
+            let res =
+                extract_with_ytdlp(&mock_path, "https://www.youtube.com/watch?v=mock_abc123").await;
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(res.is_ok(), "L'extraction mock doit réussir : {:?}", res);
+            let meta = res.unwrap();
+            assert_eq!(meta.id, "mock_abc123");
+            assert_eq!(meta.title, "Vidéo documentaire HD");
+            assert_eq!(meta.author.as_deref(), Some("Studio Test"));
+            assert_eq!(meta.duration_seconds, Some(185));
+            assert_eq!(meta.source_platform, "YouTube");
+            assert!(!meta.available_formats.is_empty());
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_extract_private_video() {
+        let script = r#"#!/bin/sh
+echo "ERROR: [youtube] private_id: Private video. Sign in to confirm you have access" >&2
+exit 1
+"#;
+        let mock_path = create_mock_script(script);
+
+        tauri::async_runtime::block_on(async {
+            let res =
+                extract_with_ytdlp(&mock_path, "https://www.youtube.com/watch?v=private_id").await;
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(res.is_err());
+            match res.unwrap_err() {
+                CommandError::DownloadFailed(msg) => {
+                    assert!(
+                        msg.to_lowercase().contains("privée")
+                            || msg.to_lowercase().contains("private")
+                    );
+                }
+                other => panic!("Erreur attendue DownloadFailed, reçu : {:?}", other),
+            }
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_extract_malformed_json() {
+        let script = r#"#!/bin/sh
+echo "Garbage non-json output !!! {{"
+exit 0
+"#;
+        let mock_path = create_mock_script(script);
+
+        tauri::async_runtime::block_on(async {
+            let res = extract_with_ytdlp(&mock_path, "https://example.com/video").await;
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(res.is_err());
+            assert!(matches!(
+                res.unwrap_err(),
+                CommandError::ExtractionFailed(_)
+            ));
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_download_success() {
+        let script = r#"#!/bin/sh
+echo "ktk: 20.0%| 2.00MiB/s|00:20|1048576"
+echo "ktk: 60.0%| 2.50MiB/s|00:10|1048576"
+echo "ktk:100.0%| 3.00MiB/s|00:00|1048576"
+
+TARGET_FILE=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    TARGET_FILE="$2"
+    shift 2
+  else
+    shift 1
+  fi
+done
+
+ACTUAL_FILE=$(echo "$TARGET_FILE" | sed 's/%(ext)s/mp4/')
+echo "Simulated binary video payload" > "$ACTUAL_FILE"
+echo "ktk-file:$ACTUAL_FILE"
+exit 0
+"#;
+        let mock_path = create_mock_script(script);
+        let app = tauri::test::mock_app();
+        let target_dir = std::env::temp_dir().join(format!("ktk-dl-test-{}", uuid::Uuid::new_v4()));
+        let target_path = target_dir.join("test_video.mp4");
+
+        tauri::async_runtime::block_on(async {
+            let res = download_with_ytdlp_binary(
+                app.handle(),
+                "dl-test-success",
+                "https://example.com/video.mp4",
+                QualityPreset::Best,
+                &target_path,
+                None,
+                &mock_path,
+            )
+            .await;
+
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(
+                res.is_ok(),
+                "Le téléchargement mocké doit réussir : {:?}",
+                res
+            );
+            let (final_path, file_size) = res.unwrap();
+            assert!(final_path.exists());
+            assert!(file_size > 0);
+
+            let _ = std::fs::remove_file(&final_path);
+            let _ = std::fs::remove_dir(&target_dir);
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_download_cancellation() {
+        let script = r#"#!/bin/sh
+TARGET_FILE=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    TARGET_FILE="$2"
+    shift 2
+  else
+    shift 1
+  fi
+done
+
+BASE=$(echo "$TARGET_FILE" | sed 's/\.%(ext)s//')
+PART_FILE="${BASE}.mp4.part"
+touch "$PART_FILE"
+echo "ktk: 15.0%| 1.00MiB/s|01:00|10485760"
+
+while true; do
+  sleep 0.05
+done
+"#;
+        let mock_path = create_mock_script(script);
+        let app = tauri::test::mock_app();
+        let target_dir =
+            std::env::temp_dir().join(format!("ktk-dl-cancel-{}", uuid::Uuid::new_v4()));
+        let target_path = target_dir.join("test_cancel.mp4");
+        let control = Arc::new(DownloadControl::default());
+        let control_clone = Arc::clone(&control);
+
+        tauri::async_runtime::block_on(async {
+            let handle = app.handle().clone();
+            let target_clone = target_path.clone();
+            let mock_clone = mock_path.clone();
+
+            let task = tokio::spawn(async move {
+                download_with_ytdlp_binary(
+                    &handle,
+                    "dl-test-cancel",
+                    "https://example.com/video.mp4",
+                    QualityPreset::Best,
+                    &target_clone,
+                    Some(control_clone),
+                    &mock_clone,
+                )
+                .await
+            });
+
+            // Laisse le script démarrer et créer le fichier partiel
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            control.request_cancel();
+
+            let res = task.await.expect("Join task");
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(matches!(res, Err(CommandError::DownloadCancelled)));
+
+            // Vérifie que les fichiers temporaires .part ont été nettoyés
+            let intermediate = target_dir.join("test_cancel.mp4.part");
+            assert!(
+                !intermediate.exists(),
+                "Le fichier .part doit être nettoyé après annulation"
+            );
+
+            let _ = std::fs::remove_dir(&target_dir);
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_download_pause() {
+        let script = r#"#!/bin/sh
+TARGET_FILE=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    TARGET_FILE="$2"
+    shift 2
+  else
+    shift 1
+  fi
+done
+
+BASE=$(echo "$TARGET_FILE" | sed 's/\.%(ext)s//')
+PART_FILE="${BASE}.mp4.part"
+touch "$PART_FILE"
+echo "ktk: 30.0%| 1.00MiB/s|00:45|10485760"
+
+while true; do
+  sleep 0.05
+done
+"#;
+        let mock_path = create_mock_script(script);
+        let app = tauri::test::mock_app();
+        let target_dir =
+            std::env::temp_dir().join(format!("ktk-dl-pause-{}", uuid::Uuid::new_v4()));
+        let target_path = target_dir.join("test_pause.mp4");
+        let control = Arc::new(DownloadControl::default());
+        let control_clone = Arc::clone(&control);
+
+        tauri::async_runtime::block_on(async {
+            let handle = app.handle().clone();
+            let target_clone = target_path.clone();
+            let mock_clone = mock_path.clone();
+
+            let task = tokio::spawn(async move {
+                download_with_ytdlp_binary(
+                    &handle,
+                    "dl-test-pause",
+                    "https://example.com/video.mp4",
+                    QualityPreset::Best,
+                    &target_clone,
+                    Some(control_clone),
+                    &mock_clone,
+                )
+                .await
+            });
+
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            control.request_pause();
+
+            let res = task.await.expect("Join task");
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(matches!(res, Err(CommandError::DownloadPaused)));
+
+            // Lors d'une pause, le fichier partiel .part DOIT être conservé pour la reprise !
+            let intermediate = target_dir.join("test_pause.mp4.part");
+            assert!(
+                intermediate.exists(),
+                "Le fichier .part doit être conservé lors d'une pause"
+            );
+
+            let _ = std::fs::remove_file(&intermediate);
+            let _ = std::fs::remove_dir(&target_dir);
+        });
+    }
+
+    #[test]
+    fn test_mock_ytdlp_download_failure_cleanup() {
+        let script = r#"#!/bin/sh
+TARGET_FILE=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then
+    TARGET_FILE="$2"
+    shift 2
+  else
+    shift 1
+  fi
+done
+
+BASE=$(echo "$TARGET_FILE" | sed 's/\.%(ext)s//')
+PART_FILE="${BASE}.mp4.part"
+touch "$PART_FILE"
+echo "ERROR: [generic] HTTP Error 403: Forbidden" >&2
+exit 1
+"#;
+        let mock_path = create_mock_script(script);
+        let app = tauri::test::mock_app();
+        let target_dir = std::env::temp_dir().join(format!("ktk-dl-fail-{}", uuid::Uuid::new_v4()));
+        let target_path = target_dir.join("test_fail.mp4");
+
+        tauri::async_runtime::block_on(async {
+            let res = download_with_ytdlp_binary(
+                app.handle(),
+                "dl-test-fail",
+                "https://example.com/forbidden.mp4",
+                QualityPreset::Best,
+                &target_path,
+                None,
+                &mock_path,
+            )
+            .await;
+
+            let _ = std::fs::remove_file(&mock_path);
+
+            assert!(res.is_err());
+            assert!(matches!(
+                res.unwrap_err(),
+                CommandError::ExtractionFailed(_) | CommandError::DownloadFailed(_)
+            ));
+
+            // Vérifie que le fichier partiel a été nettoyé
+            let intermediate = target_dir.join("test_fail.mp4.part");
+            assert!(
+                !intermediate.exists(),
+                "Le fichier .part doit être nettoyé en cas d'échec"
+            );
+
+            let _ = std::fs::remove_dir(&target_dir);
+        });
     }
 }

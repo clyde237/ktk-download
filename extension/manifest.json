@@ -19,14 +19,8 @@
     },
     "default_title": "ktk-download — Vidéos détectées"
   },
-  "permissions": [
-    "activeTab",
-    "storage",
-    "webRequest"
-  ],
-  "host_permissions": [
-    "<all_urls>"
-  ],
+  "permissions": ["activeTab", "storage", "webRequest"],
+  "host_permissions": ["<all_urls>"],
   "background": {
     "service_worker": "background.js"
   },

@@ -8,6 +8,7 @@ const MAX_RECENT_FOLDERS = 5;
 // Ces préférences sont un confort : si le stockage local est indisponible, l'application
 // fonctionne avec le dossier par défaut, sans mémoriser les choix.
 function readStorage(key: string): string | null {
+  if (typeof localStorage === 'undefined') return null;
   try {
     return localStorage.getItem(key);
   } catch {
@@ -16,6 +17,7 @@ function readStorage(key: string): string | null {
 }
 
 function writeStorage(key: string, value: string | null) {
+  if (typeof localStorage === 'undefined') return;
   try {
     if (value === null) {
       localStorage.removeItem(key);

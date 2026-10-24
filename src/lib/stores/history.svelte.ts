@@ -54,6 +54,7 @@ function isHistoryEntry(value: unknown): value is HistoryEntry {
 }
 
 function loadHistory(): HistoryEntry[] {
+  if (typeof localStorage === 'undefined') return [];
   try {
     const raw = localStorage.getItem(HISTORY_KEY);
     if (!raw) return [];
@@ -98,6 +99,7 @@ class HistoryStore {
   }
 
   #persist() {
+    if (typeof localStorage === 'undefined') return;
     try {
       localStorage.setItem(
         HISTORY_KEY,

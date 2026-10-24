@@ -3,6 +3,7 @@
 Cette extension pour navigateur web intègre **ktk-download** directement dans vos pages internet préférées (style IDM / Internet Download Manager).
 
 Elle est conçue avec **Manifest V3** et est compatible avec :
+
 - **Google Chrome**
 - **Microsoft Edge**
 - **Mozilla Firefox** (109+)
@@ -31,23 +32,27 @@ Elle est conçue avec **Manifest V3** et est compatible avec :
 ## Guide d'Installation par Navigateur
 
 ### 1. Google Chrome, Brave & Chromium
+
 1. Ouvrez `chrome://extensions` dans la barre d'adresse.
 2. Activez le **Mode développeur** (interrupteur en haut à droite).
 3. Cliquez sur **Charger l'extension non empaquetée**.
 4. Sélectionnez le dossier `extension/` du projet ktk-download.
 
 ### 2. Microsoft Edge
+
 1. Ouvrez `edge://extensions` dans la barre d'adresse.
 2. Activez le **Mode développeur** dans la barre latérale gauche.
 3. Cliquez sur **Charger les composants décompressés**.
 4. Sélectionnez le dossier `extension/`.
 
 ### 3. Mozilla Firefox
+
 1. Ouvrez `about:debugging#/runtime/this-firefox` dans la barre d'adresse.
 2. Cliquez sur **Charger un module temporaire...**.
 3. Sélectionnez le fichier `manifest.json` situé dans le dossier `extension/`.
 
 ### 4. Opera
+
 1. Ouvrez `opera://extensions` dans la barre d'adresse.
 2. Activez le **Mode développeur** (en haut à droite).
 3. Cliquez sur **Charger l'extension décompressée** et sélectionnez le dossier `extension/`.
