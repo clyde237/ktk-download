@@ -68,11 +68,47 @@ pub fn start_extension_server(app: AppHandle) {
 }
 
 /// Requête reçue depuis l'extension de navigateur pour lancer un téléchargement.
+///
+/// Qualité et dossier sont choisis dans l'extension ; le backend les revérifie au lancement
+/// (`QualityPreset::parse`, `validate_output_dir`).
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct ExtensionDownloadPayload {
     pub url: String,
     pub title: Option<String>,
     pub format_id: Option<String>,
+    pub output_dir: Option<String>,
+}
+
+/// Dossiers récemment utilisés dans l'application, proposés par l'extension.
+#[derive(Debug, Default)]
+pub struct RecentFolders(pub std::sync::Mutex<Vec<String>>);
+
+/// Préfixes d'origine des extensions de navigateur (Firefox, Chromium, Safari).
+const EXTENSION_ORIGIN_PREFIXES: &[&str] = &[
+    "moz-extension://",
+    "chrome-extension://",
+    "safari-web-extension://",
+];
+
+/// Seule l'extension peut piloter le serveur. Une page web ne peut pas falsifier l'en-tête
+/// `Origin` : sans ce filtre, n'importe quel site ouvert pourrait lancer des téléchargements ou
+/// lire les dossiers de l'utilisateur. Sans `Origin`, la requête vient d'un programme local.
+fn is_allowed_origin(origin: Option<&str>) -> bool {
+    origin.is_none_or(|o| EXTENSION_ORIGIN_PREFIXES.iter().any(|p| o.starts_with(p)))
+}
+
+fn header_value<'a>(request: &'a str, name: &str) -> Option<&'a str> {
+    request
+        .split("\r\n\r\n")
+        .next()?
+        .lines()
+        .skip(1)
+        .find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then_some(value.trim())
+        })
 }
 
 async fn handle_client(
@@ -96,10 +132,29 @@ async fn handle_client(
     let method = parts.next().unwrap_or("");
     let path = parts.next().unwrap_or("");
 
-    // Headers CORS permissifs pour autoriser les requêtes venant de l'extension
-    let cors_headers = "Access-Control-Allow-Origin: *\r\n\
-                        Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
-                        Access-Control-Allow-Headers: Content-Type\r\n";
+    let origin = header_value(&request_str, "origin");
+    if !is_allowed_origin(origin) {
+        let body = r#"{"error":"Origine non autorisée"}"#;
+        let response = format!(
+            "HTTP/1.1 403 Forbidden\r\n\
+             Content-Type: application/json\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await?;
+        return Ok(());
+    }
+
+    // En-têtes CORS limités à l'extension qui a fait la requête
+    let cors_headers = format!(
+        "Access-Control-Allow-Origin: {}\r\n\
+         Vary: Origin\r\n\
+         Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n\
+         Access-Control-Allow-Headers: Content-Type\r\n",
+        origin.unwrap_or("null")
+    );
 
     if method == "OPTIONS" {
         let response = format!(
@@ -136,11 +191,7 @@ async fn handle_client(
 
         if let Ok(payload) = serde_json::from_str::<ExtensionDownloadPayload>(raw_body) {
             log::info!("Téléchargement reçu depuis l'extension : {:?}", payload);
-            if let Some(window) = app.get_webview_window("main") {
-                let _ = window.unminimize();
-                let _ = window.show();
-                let _ = window.set_focus();
-            }
+            // La fenêtre principale reste en arrière-plan : la popup du téléchargement s'ouvre.
             let _ = app.emit("extension-download", payload);
 
             let body = r#"{"success":true,"message":"Téléchargement transmis à ktk-download"}"#;
@@ -173,6 +224,27 @@ async fn handle_client(
         }
     }
 
+    if method == "GET" && path == "/folders" {
+        let default_folder = dirs::download_dir().map(|d| d.to_string_lossy().to_string());
+        let recent = app
+            .try_state::<RecentFolders>()
+            .map(|state| state.0.lock().unwrap().clone())
+            .unwrap_or_default();
+        let body = serde_json::json!({ "default": default_folder, "recent": recent }).to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\n\
+             {}\
+             Content-Type: application/json; charset=utf-8\r\n\
+             Content-Length: {}\r\n\
+             Connection: close\r\n\r\n{}",
+            cors_headers,
+            body.len(),
+            body
+        );
+        socket.write_all(response.as_bytes()).await?;
+        return Ok(());
+    }
+
     // Réponse 404 par défaut
     let body = r#"{"error":"Not Found"}"#;
     let response = format!(
@@ -200,6 +272,22 @@ mod tests {
         assert_eq!(payload.url, "https://www.youtube.com/watch?v=dQw4w9WgXcQ");
         assert_eq!(payload.title.as_deref(), Some("Rick Astley"));
         assert_eq!(payload.format_id.as_deref(), Some("1080p"));
+    }
+
+    #[test]
+    fn test_only_extensions_and_local_tools_are_allowed() {
+        assert!(is_allowed_origin(None));
+        assert!(is_allowed_origin(Some("moz-extension://4f2a-1c")));
+        assert!(is_allowed_origin(Some("chrome-extension://abcdef")));
+        assert!(!is_allowed_origin(Some("https://evil.example")));
+        assert!(!is_allowed_origin(Some("null")));
+    }
+
+    #[test]
+    fn test_header_value_is_case_insensitive_and_ignores_body() {
+        let request = "POST /download HTTP/1.1\r\nHost: 127.0.0.1\r\nORIGIN: moz-extension://x\r\n\r\n{\"origin\":\"https://evil\"}";
+        assert_eq!(header_value(request, "origin"), Some("moz-extension://x"));
+        assert_eq!(header_value("GET /ping HTTP/1.1\r\n\r\n", "origin"), None);
     }
 
     #[test]

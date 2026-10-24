@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
 use crate::downloader::{self, DownloadRegistry};
@@ -47,6 +47,60 @@ pub async fn cancel_download(
         }
         None => Ok(false),
     }
+}
+
+/// Commande IPC : Ouvre (ou ramène au premier plan) la fenêtre de suivi d'un téléchargement.
+///
+/// Une fenêtre par téléchargement, à la manière d'un gestionnaire de téléchargements : la fermer
+/// n'arrête pas le téléchargement. Asynchrone, car créer une fenêtre depuis une commande
+/// synchrone bloque sous Windows.
+#[tauri::command]
+pub async fn open_download_window(
+    app: AppHandle,
+    download_id: String,
+    title: String,
+) -> Result<(), CommandError> {
+    let id = resolve_download_id(Some(&download_id))?;
+    let label = format!("download-{}", id);
+
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let short_title: String = title.chars().take(60).collect();
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("download?id={}", id).into()),
+    )
+    .title(format!("{} — ktk-download", short_title.trim()))
+    .inner_size(500.0, 360.0)
+    .min_inner_size(420.0, 320.0)
+    .center()
+    .focused(true)
+    .build()
+    .map_err(|e| CommandError::Internal(format!("Ouverture de la fenêtre impossible : {}", e)))?;
+    Ok(())
+}
+
+/// Commande IPC : Transmet les dossiers récents de l'interface, proposés ensuite par l'extension.
+///
+/// Seuls des chemins absolus vers des dossiers existants sont retenus.
+#[tauri::command]
+pub fn set_recent_folders(
+    recent: State<'_, crate::server::RecentFolders>,
+    folders: Vec<String>,
+) -> Result<(), CommandError> {
+    let valid: Vec<String> = folders
+        .into_iter()
+        .filter(|f| validate_output_dir(Some(f)).ok().flatten().is_some())
+        .take(10)
+        .collect();
+    *recent.0.lock().unwrap() = valid;
+    Ok(())
 }
 
 /// Commande IPC : Met en pause un téléchargement en cours en conservant ses fichiers partiels.

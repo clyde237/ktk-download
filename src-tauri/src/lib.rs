@@ -7,7 +7,10 @@ pub mod quality;
 pub mod server;
 pub mod validator;
 
-use commands::{cancel_download, download_video, inspect_url, pause_download, validate_url};
+use commands::{
+    cancel_download, download_video, inspect_url, open_download_window, pause_download,
+    set_recent_folders, validate_url,
+};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -21,6 +24,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(downloader::DownloadRegistry::default())
+        .manage(server::RecentFolders::default())
         .setup(|app| {
             server::start_extension_server(app.handle().clone());
             Ok(())
@@ -31,7 +35,9 @@ pub fn run() {
             download_video,
             validate_url,
             cancel_download,
-            pause_download
+            pause_download,
+            open_download_window,
+            set_recent_folders
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
