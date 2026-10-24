@@ -204,6 +204,7 @@
 <div class="app-shell">
   <header class="app-header">
     <div class="brand">
+      <img src="/favicon.png" alt="ktk-download" class="brand-logo" width="24" height="24" />
       <span class="lamp" data-state={lampState} aria-hidden="true"></span>
       <h1 class="wordmark">ktk-download</h1>
     </div>
@@ -518,6 +519,14 @@
     align-items: center;
     gap: var(--space-3);
     min-width: 0;
+  }
+
+  .brand-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm, 6px);
+    flex-shrink: 0;
+    box-shadow: 0 1px 2px oklch(0.2 0.01 var(--neutral-hue) / 0.1);
   }
 
   .wordmark {
