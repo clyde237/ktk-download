@@ -665,17 +665,57 @@ fn find_js_runtime() -> Option<(&'static str, PathBuf)> {
     find_executable("deno", &home_install(".deno/bin/deno"))
         .map(|path| ("deno", path))
         .or_else(|| {
-            find_executable(
-                "node",
-                &[
-                    PathBuf::from("/usr/local/bin/node"),
-                    PathBuf::from("/usr/bin/node"),
-                    PathBuf::from("/opt/homebrew/bin/node"),
-                ],
-            )
-            .map(|path| ("node", path))
+            let mut locations = vec![
+                PathBuf::from("/usr/local/bin/node"),
+                PathBuf::from("/usr/bin/node"),
+                PathBuf::from("/opt/homebrew/bin/node"),
+            ];
+            locations.extend(user_node_installs());
+            find_executable("node", &locations).map(|path| ("node", path))
         })
         .or_else(|| find_executable("bun", &home_install(".bun/bin/bun")).map(|path| ("bun", path)))
+}
+
+/// Installations de node propres à l'utilisateur (volta, nvm, fnm).
+///
+/// Ces gestionnaires n'ajoutent node au `PATH` que dans un terminal : une application lancée
+/// depuis le menu du bureau ne le verrait pas, et yt-dlp tournerait sans moteur JavaScript.
+fn user_node_installs() -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+
+    let mut candidates = vec![home.join(".volta/bin/node")];
+    let versioned_installs = [
+        (home.join(".nvm/versions/node"), "bin/node"),
+        (
+            home.join(".local/share/fnm/node-versions"),
+            "installation/bin/node",
+        ),
+    ];
+    for (versions_dir, binary) in versioned_installs {
+        let Ok(entries) = std::fs::read_dir(&versions_dir) else {
+            continue;
+        };
+        let mut versions: Vec<PathBuf> = entries.filter_map(|e| e.ok().map(|e| e.path())).collect();
+        // La version la plus récente d'abord
+        versions.sort_by_key(|dir| std::cmp::Reverse(node_version_key(dir)));
+        candidates.extend(versions.into_iter().map(|dir| dir.join(binary)));
+    }
+    candidates
+}
+
+/// Clé de tri d'un dossier de version nommé `v24.20.0` : `[24, 20, 0]`.
+fn node_version_key(dir: &Path) -> Vec<u64> {
+    dir.file_name()
+        .and_then(|n| n.to_str())
+        .map(|name| {
+            name.trim_start_matches('v')
+                .split('.')
+                .map(|part| part.parse().unwrap_or(0))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Recherche un exécutable dans le `PATH`, puis dans les emplacements usuels fournis.
@@ -880,6 +920,18 @@ mod tests {
             ytdlp_failure_error(stderr, false),
             CommandError::DownloadFailed(_)
         ));
+    }
+
+    #[test]
+    fn test_node_version_key_orders_newest_first() {
+        let mut dirs = [
+            PathBuf::from("/n/v18.19.0"),
+            PathBuf::from("/n/v24.20.0"),
+            PathBuf::from("/n/v20.11.1"),
+        ];
+        dirs.sort_by_key(|dir| std::cmp::Reverse(node_version_key(dir)));
+        assert_eq!(dirs[0], PathBuf::from("/n/v24.20.0"));
+        assert_eq!(dirs[2], PathBuf::from("/n/v18.19.0"));
     }
 
     #[test]

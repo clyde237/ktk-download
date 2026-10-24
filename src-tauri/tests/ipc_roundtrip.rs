@@ -259,10 +259,10 @@ done
     let flag_clone = Arc::clone(&cancelled_event_received);
 
     app.listen("download-progress", move |event| {
-        if let Ok(payload) = serde_json::from_str::<DownloadProgressPayload>(event.payload()) {
-            if payload.status == DownloadStatus::Cancelled {
-                flag_clone.store(true, Ordering::SeqCst);
-            }
+        if let Ok(payload) = serde_json::from_str::<DownloadProgressPayload>(event.payload())
+            && payload.status == DownloadStatus::Cancelled
+        {
+            flag_clone.store(true, Ordering::SeqCst);
         }
     });
 

@@ -84,6 +84,16 @@ impl CommandError {
             Self::VideoNotFound(
                 "Cette vidéo n'est plus disponible ou a été supprimée du site.".to_string(),
             )
+        } else if lower.contains("not a bot") {
+            // « Sign in to confirm you're not a bot » : blocage temporaire, pas une vidéo privée.
+            Self::DownloadFailed(
+                "YouTube a temporairement bloqué la requête (vérification anti-robot). Réessayez dans quelques minutes, en espaçant les téléchargements.".to_string(),
+            )
+        } else if lower.contains("confirm your age") || lower.contains("age-restricted") {
+            Self::DownloadFailed(
+                "Vidéo soumise à une limite d'âge : YouTube exige une connexion pour la lire."
+                    .to_string(),
+            )
         } else if lower.contains("private video")
             || lower.contains("members-only")
             || lower.contains("sign in")
@@ -202,6 +212,18 @@ mod tests {
             CommandError::from_ytdlp_stderr(timeout),
             CommandError::NetworkTimeout(_)
         ));
+
+        let bot_check = "ERROR: [youtube] B5QJZFYQ2Qs: Sign in to confirm you’re not a bot. Use --cookies-from-browser or --cookies for the authentication.";
+        match CommandError::from_ytdlp_stderr(bot_check) {
+            CommandError::DownloadFailed(msg) => assert!(msg.contains("anti-robot")),
+            other => panic!("Erreur inattendue : {:?}", other),
+        }
+
+        let age_gate = "ERROR: [youtube] abc: Sign in to confirm your age. This video may be inappropriate for some users.";
+        match CommandError::from_ytdlp_stderr(age_gate) {
+            CommandError::DownloadFailed(msg) => assert!(msg.contains("limite d'âge")),
+            other => panic!("Erreur inattendue : {:?}", other),
+        }
 
         let missing_ffmpeg = "ERROR: Postprocessing: ffprobe and ffmpeg not found. Please install or provide the path using --ffmpeg-location";
         match CommandError::from_ytdlp_stderr(missing_ffmpeg) {
