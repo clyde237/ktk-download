@@ -2,7 +2,6 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use regex::Regex;
@@ -11,7 +10,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-use crate::downloader::KNOWN_MEDIA_EXTENSIONS;
+use crate::downloader::{self, DownloadControl, KNOWN_MEDIA_EXTENSIONS, StopRequest};
 use crate::error::CommandError;
 use crate::models::{DownloadProgressPayload, DownloadStatus, VideoFormat, VideoMetadata};
 use crate::quality::{self, QualityPreset};
@@ -299,7 +298,7 @@ pub async fn download_with_ytdlp<R: Runtime>(
     url: &str,
     quality: QualityPreset,
     target_path: &Path,
-    cancel_token: Option<Arc<AtomicBool>>,
+    control: Option<Arc<DownloadControl>>,
 ) -> Result<(PathBuf, u64), CommandError> {
     let ytdlp_bin = find_ytdlp_binary().ok_or_else(|| {
         CommandError::Internal("Le binaire yt-dlp est introuvable sur le système.".to_string())
@@ -374,25 +373,21 @@ pub async fn download_with_ytdlp<R: Runtime>(
             _ = tokio::time::sleep(CANCEL_POLL_INTERVAL) => None,
         };
 
-        if cancel_token
-            .as_ref()
-            .is_some_and(|token| token.load(Ordering::Relaxed))
-        {
-            let _ = child.kill().await;
-            output.remove_intermediate_files().await;
-
-            let cancel_payload = DownloadProgressPayload {
-                download_id: download_id.to_string(),
-                status: DownloadStatus::Cancelled,
-                progress_percentage: 0.0,
-                downloaded_bytes: 0,
-                total_bytes: None,
-                speed_bytes_per_sec: 0,
-                eta_seconds: None,
-            };
-            let _ = app.emit("download-progress", &cancel_payload);
-
-            return Err(CommandError::DownloadCancelled);
+        match control.as_ref().and_then(|c| c.stop_request()) {
+            Some(StopRequest::Cancel) => {
+                let _ = child.kill().await;
+                output.remove_intermediate_files().await;
+                downloader::emit_stopped(app, download_id, DownloadStatus::Cancelled, 0, None);
+                return Err(CommandError::DownloadCancelled);
+            }
+            Some(StopRequest::Pause) => {
+                // Les fichiers `.part` sont conservés : relancé avec le même nom, yt-dlp reprend
+                // là où il s'était arrêté.
+                let _ = child.kill().await;
+                downloader::emit_stopped(app, download_id, DownloadStatus::Paused, 0, None);
+                return Err(CommandError::DownloadPaused);
+            }
+            None => {}
         }
 
         let Some(line) = line else {
@@ -528,6 +523,14 @@ impl YtdlpOutput {
                 let _ = tokio::fs::remove_file(entry.path()).await;
             }
         }
+    }
+}
+
+/// Supprime les fichiers partiels d'un téléchargement abandonné (yt-dlp ou streaming direct),
+/// par exemple quand un téléchargement en pause est annulé.
+pub async fn discard_partial_download(target_path: &Path) {
+    if let Some(output) = YtdlpOutput::for_target(target_path) {
+        output.remove_intermediate_files().await;
     }
 }
 

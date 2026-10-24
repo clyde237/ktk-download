@@ -28,13 +28,37 @@ pub fn validate_url(url: String) -> Result<ValidatedUrlPayload, CommandError> {
     })
 }
 
-/// Commande IPC : Interrompt et annule un téléchargement en cours via son identifiant.
+/// Commande IPC : Annule un téléchargement en cours ou en pause via son identifiant.
+///
+/// Renvoie `false` si le téléchargement n'est ni actif ni en pause (déjà terminé ou inconnu).
 #[tauri::command]
-pub fn cancel_download(
+pub async fn cancel_download(
     registry: State<'_, DownloadRegistry>,
     download_id: String,
 ) -> Result<bool, CommandError> {
-    Ok(registry.cancel(&download_id))
+    if registry.cancel(&download_id) {
+        return Ok(true);
+    }
+    // En pause : plus de processus à arrêter, seulement ses fichiers partiels à supprimer.
+    match registry.take_paused(&download_id) {
+        Some(target_path) => {
+            extractor::discard_partial_download(&target_path).await;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Commande IPC : Met en pause un téléchargement en cours en conservant ses fichiers partiels.
+///
+/// La reprise se fait en relançant `download_video` avec le même identifiant. Renvoie `false`
+/// si le téléchargement n'est pas actif.
+#[tauri::command]
+pub fn pause_download(
+    registry: State<'_, DownloadRegistry>,
+    download_id: String,
+) -> Result<bool, CommandError> {
+    Ok(registry.pause(&download_id))
 }
 
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
@@ -73,7 +97,9 @@ pub async fn download_video(
             "Un téléchargement portant cet identifiant est déjà en cours.".to_string(),
         ));
     }
-    let cancel_token = registry.register(&download_id);
+    let control = registry.register(&download_id);
+    // Reprise après une pause : mêmes fichiers partiels, donc même chemin cible.
+    let resumed_target = registry.take_paused(&download_id);
 
     let extension = if quality.is_audio_only() {
         "mp3"
@@ -95,12 +121,14 @@ pub async fn download_video(
     let _ = app.emit("download-progress", &initial_payload);
 
     // Résolution du chemin de sortie sécurisé
-    let target_path = downloader::resolve_output_path(
-        output_dir.as_deref(),
-        request.custom_filename.as_deref(),
-        &download_id[..8],
-        extension,
-    );
+    let target_path = resumed_target.unwrap_or_else(|| {
+        downloader::resolve_output_path(
+            output_dir.as_deref(),
+            request.custom_filename.as_deref(),
+            &download_id[..8],
+            extension,
+        )
+    });
 
     // Le streaming direct enregistre le fichier tel quel : il ne sait ni plafonner la qualité
     // ni extraire l'audio, il n'est donc possible qu'avec la qualité par défaut.
@@ -112,7 +140,7 @@ pub async fn download_video(
             &download_id,
             &validated.canonical_url,
             &target_path,
-            Some(Arc::clone(&cancel_token)),
+            Some(Arc::clone(&control)),
         )
     };
 
@@ -124,13 +152,14 @@ pub async fn download_video(
             &validated.canonical_url,
             quality,
             &target_path,
-            Some(Arc::clone(&cancel_token)),
+            Some(Arc::clone(&control)),
         )
         .await
         {
             Ok(file) => Ok(file),
-            // Une annulation volontaire ne doit pas relancer le téléchargement par un autre moteur.
+            // Une annulation ou une pause volontaire ne doit pas relancer un autre moteur.
             Err(CommandError::DownloadCancelled) => Err(CommandError::DownloadCancelled),
+            Err(CommandError::DownloadPaused) => Err(CommandError::DownloadPaused),
             Err(e) if direct_stream_allowed => {
                 log::warn!(
                     "Échec yt-dlp ({:?}), tentative avec le moteur de streaming direct...",
@@ -158,6 +187,9 @@ pub async fn download_video(
     };
 
     registry.unregister(&download_id);
+    if matches!(download_result, Err(CommandError::DownloadPaused)) {
+        registry.remember_paused(&download_id, target_path.clone());
+    }
 
     let (file_path, total_bytes) = download_result?;
     let file_path_str = file_path.to_string_lossy().to_string();

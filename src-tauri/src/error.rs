@@ -35,6 +35,9 @@ pub enum CommandError {
     #[error("Le téléchargement a été annulé par l'utilisateur.")]
     DownloadCancelled,
 
+    #[error("Le téléchargement a été mis en pause.")]
+    DownloadPaused,
+
     #[error("Une erreur inattendue est survenue : {0}")]
     Internal(String),
 }

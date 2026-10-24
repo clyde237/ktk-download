@@ -6,7 +6,7 @@ pub mod models;
 pub mod quality;
 pub mod validator;
 
-use commands::{cancel_download, download_video, inspect_url, validate_url};
+use commands::{cancel_download, download_video, inspect_url, pause_download, validate_url};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -25,7 +25,8 @@ pub fn run() {
             inspect_url,
             download_video,
             validate_url,
-            cancel_download
+            cancel_download,
+            pause_download
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,53 +1,111 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, USER_AGENT};
+use reqwest::StatusCode;
+use reqwest::header::{ACCEPT, CONTENT_TYPE, HeaderMap, HeaderValue, RANGE, USER_AGENT};
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::io::{AsyncWriteExt, BufWriter};
 
 use crate::error::CommandError;
 use crate::models::{DownloadProgressPayload, DownloadStatus};
 
-/// Registre gérant l'état des téléchargements actifs et leurs jetons d'annulation.
+/// Demande adressée à un téléchargement en cours, lue par sa boucle de transfert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopRequest {
+    Cancel,
+    Pause,
+}
+
+/// Jeton d'état partagé entre les commandes et la boucle de transfert : continuer, annuler ou
+/// mettre en pause.
+#[derive(Debug, Default)]
+pub struct DownloadControl(AtomicU8);
+
+impl DownloadControl {
+    const RUN: u8 = 0;
+    const CANCEL: u8 = 1;
+    const PAUSE: u8 = 2;
+
+    pub fn request_cancel(&self) {
+        self.0.store(Self::CANCEL, Ordering::Relaxed);
+    }
+
+    /// Une pause ne remplace jamais une annulation déjà demandée.
+    pub fn request_pause(&self) {
+        let _ =
+            self.0
+                .compare_exchange(Self::RUN, Self::PAUSE, Ordering::Relaxed, Ordering::Relaxed);
+    }
+
+    pub fn stop_request(&self) -> Option<StopRequest> {
+        match self.0.load(Ordering::Relaxed) {
+            Self::CANCEL => Some(StopRequest::Cancel),
+            Self::PAUSE => Some(StopRequest::Pause),
+            _ => None,
+        }
+    }
+}
+
+/// Registre des téléchargements actifs (et de leur jeton d'état) et des téléchargements en pause.
 #[derive(Debug, Default, Clone)]
 pub struct DownloadRegistry {
-    active_tokens: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    active: Arc<Mutex<HashMap<String, Arc<DownloadControl>>>>,
+    /// Chemin cible des téléchargements en pause : la reprise doit réutiliser les mêmes fichiers
+    /// partiels, et non choisir un nouveau nom.
+    paused: Arc<Mutex<HashMap<String, PathBuf>>>,
 }
 
 impl DownloadRegistry {
-    /// Enregistre un nouveau téléchargement actif et retourne son jeton d'annulation.
-    pub fn register(&self, download_id: &str) -> Arc<AtomicBool> {
-        let token = Arc::new(AtomicBool::new(false));
-        let mut map = self.active_tokens.lock().unwrap();
-        map.insert(download_id.to_string(), Arc::clone(&token));
-        token
+    /// Enregistre un nouveau téléchargement actif et retourne son jeton d'état.
+    pub fn register(&self, download_id: &str) -> Arc<DownloadControl> {
+        let control = Arc::new(DownloadControl::default());
+        let mut map = self.active.lock().unwrap();
+        map.insert(download_id.to_string(), Arc::clone(&control));
+        control
     }
 
-    /// Signale l'annulation d'un téléchargement en cours par son identifiant.
+    /// Demande l'annulation d'un téléchargement en cours. `false` s'il n'est pas actif.
     pub fn cancel(&self, download_id: &str) -> bool {
-        let map = self.active_tokens.lock().unwrap();
-        if let Some(token) = map.get(download_id) {
-            token.store(true, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
+        let map = self.active.lock().unwrap();
+        map.get(download_id)
+            .map(|control| control.request_cancel())
+            .is_some()
     }
 
-    /// Retire un téléchargement du registre à sa conclusion (succès, échec ou annulation).
+    /// Demande la mise en pause d'un téléchargement en cours. `false` s'il n'est pas actif.
+    pub fn pause(&self, download_id: &str) -> bool {
+        let map = self.active.lock().unwrap();
+        map.get(download_id)
+            .map(|control| control.request_pause())
+            .is_some()
+    }
+
+    /// Retire un téléchargement du registre à sa conclusion (succès, échec, annulation, pause).
     pub fn unregister(&self, download_id: &str) {
-        let mut map = self.active_tokens.lock().unwrap();
+        let mut map = self.active.lock().unwrap();
         map.remove(download_id);
     }
 
     /// Vérifie si un téléchargement est actuellement actif.
     pub fn is_active(&self, download_id: &str) -> bool {
-        let map = self.active_tokens.lock().unwrap();
+        let map = self.active.lock().unwrap();
         map.contains_key(download_id)
+    }
+
+    /// Mémorise le chemin cible d'un téléchargement mis en pause.
+    pub fn remember_paused(&self, download_id: &str, target_path: PathBuf) {
+        let mut map = self.paused.lock().unwrap();
+        map.insert(download_id.to_string(), target_path);
+    }
+
+    /// Retire et renvoie le chemin cible d'un téléchargement en pause (reprise ou abandon).
+    pub fn take_paused(&self, download_id: &str) -> Option<PathBuf> {
+        let mut map = self.paused.lock().unwrap();
+        map.remove(download_id)
     }
 }
 
@@ -189,7 +247,7 @@ pub async fn download_stream<R: Runtime>(
     download_id: &str,
     source_url: &str,
     target_file_path: &Path,
-    cancel_token: Option<Arc<AtomicBool>>,
+    control: Option<Arc<DownloadControl>>,
 ) -> Result<u64, CommandError> {
     // 1. Création des répertoires parents si nécessaires
     if let Some(parent) = target_file_path.parent() {
@@ -232,8 +290,16 @@ pub async fn download_stream<R: Runtime>(
     };
     let _ = app.emit("download-progress", &start_payload);
 
-    // 5. Requête HTTP avec flux asynchrone
-    let response = client.get(source_url).send().await.map_err(|e| {
+    // 5. Requête HTTP avec flux asynchrone ; reprise d'un fichier partiel laissé par une pause
+    let resume_from = tokio::fs::metadata(&part_file_path)
+        .await
+        .map(|m| m.len())
+        .unwrap_or(0);
+    let mut request = client.get(source_url);
+    if resume_from > 0 {
+        request = request.header(RANGE, format!("bytes={}-", resume_from));
+    }
+    let response = request.send().await.map_err(|e| {
         emit_failure(app, download_id, 0, None);
         CommandError::from(e)
     })?;
@@ -257,48 +323,73 @@ pub async fn download_stream<R: Runtime>(
         ));
     }
 
-    let total_bytes = response.content_length();
+    // Un serveur qui ignore la plage demandée renvoie le fichier entier (200) : on repart de zéro.
+    let resuming = resume_from > 0 && status == StatusCode::PARTIAL_CONTENT;
+    let already_downloaded = if resuming { resume_from } else { 0 };
+    let total_bytes = response
+        .content_length()
+        .map(|remaining| remaining + already_downloaded);
 
     // 6. Ouverture du fichier temporaire avec buffer non-bloquant de 128 Ko
-    let file = tokio::fs::File::create(&part_file_path)
-        .await
-        .map_err(|e| {
-            emit_failure(app, download_id, 0, total_bytes);
-            CommandError::FileSystemError(format!(
-                "Impossible de créer le fichier temporaire : {}",
-                e
-            ))
-        })?;
+    let open_result = if resuming {
+        tokio::fs::OpenOptions::new()
+            .append(true)
+            .open(&part_file_path)
+            .await
+    } else {
+        tokio::fs::File::create(&part_file_path).await
+    };
+    let file = open_result.map_err(|e| {
+        emit_failure(app, download_id, 0, total_bytes);
+        CommandError::FileSystemError(format!("Impossible de créer le fichier temporaire : {}", e))
+    })?;
     let mut writer = BufWriter::with_capacity(128 * 1024, file);
 
     let mut stream = response.bytes_stream();
-    let mut downloaded_bytes: u64 = 0;
+    let mut downloaded_bytes: u64 = already_downloaded;
 
     let mut last_emit_instant = Instant::now();
-    let mut last_emit_bytes: u64 = 0;
+    let mut last_emit_bytes: u64 = already_downloaded;
     let mut smoothed_speed: u64 = 0;
 
     // 7. Pipeline de réception et d'écriture des blocs
     while let Some(chunk_result) = stream.next().await {
-        // Vérification d'un signal d'annulation
-        if let Some(ref token) = cancel_token
-            && token.load(Ordering::Relaxed)
-        {
-            drop(writer);
-            let _ = tokio::fs::remove_file(&part_file_path).await;
-
-            let cancel_payload = DownloadProgressPayload {
-                download_id: download_id.to_string(),
-                status: DownloadStatus::Cancelled,
-                progress_percentage: 0.0,
-                downloaded_bytes,
-                total_bytes,
-                speed_bytes_per_sec: 0,
-                eta_seconds: None,
-            };
-            let _ = app.emit("download-progress", &cancel_payload);
-
-            return Err(CommandError::DownloadCancelled);
+        // Vérification d'une demande d'annulation ou de pause
+        match control.as_ref().and_then(|c| c.stop_request()) {
+            Some(StopRequest::Cancel) => {
+                drop(writer);
+                let _ = tokio::fs::remove_file(&part_file_path).await;
+                emit_stopped(
+                    app,
+                    download_id,
+                    DownloadStatus::Cancelled,
+                    downloaded_bytes,
+                    total_bytes,
+                );
+                return Err(CommandError::DownloadCancelled);
+            }
+            Some(StopRequest::Pause) => {
+                // Le fichier partiel est conservé et complet jusqu'ici : la reprise repartira de sa taille.
+                if let Err(e) = writer.flush().await {
+                    drop(writer);
+                    let _ = tokio::fs::remove_file(&part_file_path).await;
+                    emit_failure(app, download_id, downloaded_bytes, total_bytes);
+                    return Err(CommandError::FileSystemError(format!(
+                        "Échec de synchronisation disque : {}",
+                        e
+                    )));
+                }
+                drop(writer);
+                emit_stopped(
+                    app,
+                    download_id,
+                    DownloadStatus::Paused,
+                    downloaded_bytes,
+                    total_bytes,
+                );
+                return Err(CommandError::DownloadPaused);
+            }
+            None => {}
         }
 
         let chunk = match chunk_result {
@@ -427,6 +518,26 @@ fn is_non_media_content_type(content_type: &str) -> bool {
         .trim()
         .to_ascii_lowercase();
     NON_MEDIA_CONTENT_TYPES.contains(&mime.as_str())
+}
+
+/// Émet l'arrêt d'un téléchargement (annulation ou pause) avec les octets déjà reçus.
+pub fn emit_stopped<R: Runtime>(
+    app: &AppHandle<R>,
+    download_id: &str,
+    status: DownloadStatus,
+    downloaded: u64,
+    total: Option<u64>,
+) {
+    let payload = DownloadProgressPayload {
+        download_id: download_id.to_string(),
+        status,
+        progress_percentage: 0.0,
+        downloaded_bytes: downloaded,
+        total_bytes: total,
+        speed_bytes_per_sec: 0,
+        eta_seconds: None,
+    };
+    let _ = app.emit("download-progress", &payload);
 }
 
 fn emit_failure<R: Runtime>(
@@ -578,15 +689,39 @@ mod tests {
         let id = "test_download_123";
 
         assert!(!registry.is_active(id));
-        let token = registry.register(id);
+        let control = registry.register(id);
         assert!(registry.is_active(id));
-        assert!(!token.load(Ordering::Relaxed));
+        assert_eq!(control.stop_request(), None);
 
-        let cancelled = registry.cancel(id);
-        assert!(cancelled);
-        assert!(token.load(Ordering::Relaxed));
+        assert!(registry.cancel(id));
+        assert_eq!(control.stop_request(), Some(StopRequest::Cancel));
 
         registry.unregister(id);
         assert!(!registry.is_active(id));
+        assert!(!registry.cancel(id));
+        assert!(!registry.pause(id));
+    }
+
+    #[test]
+    fn test_pause_never_overrides_cancel() {
+        let control = DownloadControl::default();
+        control.request_pause();
+        assert_eq!(control.stop_request(), Some(StopRequest::Pause));
+
+        // L'annulation l'emporte toujours, même après une pause
+        control.request_cancel();
+        control.request_pause();
+        assert_eq!(control.stop_request(), Some(StopRequest::Cancel));
+    }
+
+    #[test]
+    fn test_paused_targets_are_taken_once() {
+        let registry = DownloadRegistry::default();
+        registry.remember_paused("a", PathBuf::from("/tmp/Clip.mp4"));
+        assert_eq!(
+            registry.take_paused("a"),
+            Some(PathBuf::from("/tmp/Clip.mp4"))
+        );
+        assert_eq!(registry.take_paused("a"), None);
     }
 }

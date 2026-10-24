@@ -67,6 +67,7 @@ pub enum DownloadStatus {
     Queued,
     Downloading,
     Processing,
+    Paused,
     Completed,
     Failed,
     Cancelled,
