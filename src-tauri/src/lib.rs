@@ -4,6 +4,7 @@ pub mod error;
 pub mod extractor;
 pub mod models;
 pub mod quality;
+pub mod server;
 pub mod validator;
 
 use commands::{cancel_download, download_video, inspect_url, pause_download, validate_url};
@@ -20,6 +21,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(downloader::DownloadRegistry::default())
+        .setup(|app| {
+            server::start_extension_server(app.handle().clone());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             inspect_url,

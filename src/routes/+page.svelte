@@ -4,7 +4,8 @@
   import DownloadProgress from '$lib/components/DownloadProgress.svelte';
   import QualitySelector from '$lib/components/QualitySelector.svelte';
   import UrlInput from '$lib/components/UrlInput.svelte';
-  import { untrack } from 'svelte';
+  import { onMount, untrack } from 'svelte';
+  import { listen, type UnlistenFn } from '@tauri-apps/api/event';
   import { destination } from '$lib/stores/destination.svelte';
   import { createDownloadNotifier } from '$lib/stores/download-notifications';
   import {
@@ -32,6 +33,48 @@
 
   // Notifications du cycle de vie de chaque téléchargement de la file
   const notifyDownload = createDownloadNotifier();
+
+  interface ExtensionDownloadPayload {
+    url: string;
+    title?: string | null;
+    format_id?: string | null;
+  }
+
+  onMount(() => {
+    let unlisten: UnlistenFn | undefined;
+    void listen<ExtensionDownloadPayload>('extension-download', (event) => {
+      const payload = event.payload;
+      const title = payload.title?.trim() || 'Vidéo web';
+      const formatId = payload.format_id?.trim() || 'best';
+
+      void addDownload({
+        url: payload.url,
+        title,
+        formatId,
+        outputDir: destination.selected ?? undefined
+      }).then((error) => {
+        if (error) {
+          toasts.error({
+            title: 'Échec de capture extension',
+            message: error
+          });
+        } else {
+          toasts.success({
+            title: 'Capture vidéo détectée',
+            message: `${title} a été ajouté à la file d’attente.`
+          });
+        }
+      });
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  });
 
   $effect(() => {
     for (const entry of downloads.ordered) {
