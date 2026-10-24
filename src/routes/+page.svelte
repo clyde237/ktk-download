@@ -21,6 +21,7 @@
   // Qualité choisie, conservée d'une vidéo à l'autre quand elle reste disponible.
   let selectedQuality = $state('best');
   let currentError = $state<CommandError | null>(null);
+  let isInspecting = $state(false);
 
   let isAdding = $state(false);
   let downloadStartError = $state<string | null>(null);
@@ -114,7 +115,26 @@
     return parts.join(' · ');
   });
 
+  let errorAdvice = $derived.by(() => {
+    if (!currentError) return null;
+    switch (currentError.kind) {
+      case 'InvalidUrl':
+        return 'Vérifiez que le lien commence bien par http:// ou https:// et qu’il ne comporte pas de faute de frappe.';
+      case 'UnsupportedPlatform':
+        return 'Cette plateforme n’est pas reconnue. Pour les sites web généraux, essayez de coller le lien direct vers le fichier .mp4 ou le flux .m3u8.';
+      case 'VideoNotFound':
+        return 'La vidéo semble indisponible, supprimée, privée ou soumise à une restriction d’accès.';
+      case 'NetworkTimeout':
+      case 'NetworkError':
+        return 'Le réseau n’a pas répondu à temps. Vérifiez votre connexion Internet et réessayez.';
+      case 'ExtractionFailed':
+      default:
+        return 'yt-dlp ou l’extracteur n’a pas pu récupérer les flux média pour cette adresse.';
+    }
+  });
+
   function handleInspect(metadata: VideoMetadata) {
+    isInspecting = false;
     inspectedVideo = metadata;
     const available = metadata.available_formats.map((f) => f.format_id);
     if (!available.includes(selectedQuality)) {
@@ -124,6 +144,7 @@
   }
 
   function handleError(error: CommandError | null) {
+    isInspecting = false;
     currentError = error;
     if (error) {
       inspectedVideo = null;
@@ -131,6 +152,7 @@
   }
 
   function handleClear() {
+    isInspecting = false;
     inspectedVideo = null;
     currentError = null;
   }
@@ -150,12 +172,55 @@
       <UrlInput
         onInspect={handleInspect}
         onError={handleError}
+        onLoading={(loading) => {
+          isInspecting = loading;
+          if (loading) {
+            currentError = null;
+          }
+        }}
         onClear={handleClear}
         autofocus={true}
       />
     </section>
 
-    {#if inspectedVideo}
+    {#if isInspecting}
+      <section
+        class="panel video-card video-card-skeleton"
+        aria-label="Analyse de la vidéo en cours"
+        aria-busy="true"
+      >
+        <div class="video-main">
+          <div class="thumbnail skeleton-thumb">
+            <svg
+              class="skeleton-play-icon"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+          </div>
+
+          <div class="video-details">
+            <span class="skeleton-pill"></span>
+            <div class="skeleton-line skeleton-title-1"></div>
+            <div class="skeleton-line skeleton-title-2"></div>
+            <div class="skeleton-line skeleton-author"></div>
+          </div>
+        </div>
+
+        <div class="skeleton-footer">
+          <span class="skeleton-spinner" aria-hidden="true"></span>
+          <span class="skeleton-label"
+            >Analyse du flux vidéo et résolution des qualités disponibles…</span
+          >
+        </div>
+      </section>
+    {:else if inspectedVideo}
       <section class="panel video-card" aria-label="Vidéo analysée">
         <div class="video-main">
           {#if inspectedVideo.thumbnail_url}
@@ -221,9 +286,69 @@
           <p class="download-start-error" role="alert">{downloadStartError}</p>
         {/if}
       </section>
-    {:else if !currentError && downloads.ordered.length === 0 && history.entries.length === 0}
+    {:else if currentError}
+      <section class="panel error-card" role="alert" aria-live="assertive">
+        <div class="error-header">
+          <div class="error-icon-box" aria-hidden="true">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <div class="error-text-group">
+            <h2 class="error-title">Échec de l'analyse vidéo</h2>
+            <p class="error-message">{currentError.message}</p>
+          </div>
+          <button
+            type="button"
+            class="error-dismiss-btn"
+            onclick={() => (currentError = null)}
+            aria-label="Fermer ce message d'erreur"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {#if errorAdvice}
+          <div class="error-advice">
+            <span class="advice-badge">Conseil</span>
+            <span class="advice-text">{errorAdvice}</span>
+          </div>
+        {/if}
+      </section>
+    {:else if downloads.ordered.length === 0 && history.entries.length === 0}
       <section class="panel sources" aria-labelledby="sources-heading">
-        <h2 id="sources-heading" class="sources-heading">Sources prises en charge</h2>
+        <div class="sources-header">
+          <h2 id="sources-heading" class="sources-heading">Prêt à télécharger</h2>
+          <span class="sources-badge">Multi-sources</span>
+        </div>
+        <p class="sources-lead">
+          Collez le lien d'une vidéo dans le champ ci-dessus pour inspecter ses formats et lancer la
+          capture haute vitesse.
+        </p>
+
         <dl class="sources-list">
           <div class="source-row">
             <dt>
@@ -240,7 +365,7 @@
               </svg>
               YouTube
             </dt>
-            <dd>Vidéos, Shorts et audio MP3</dd>
+            <dd>Vidéos standard, Shorts, listes et conversion audio MP3</dd>
           </div>
           <div class="source-row">
             <dt>
@@ -256,12 +381,22 @@
                 <circle cx="12" cy="12" r="10" />
                 <polygon points="10 8 16 12 10 16 10 8" />
               </svg>
-              Liens directs
+              Flux directs & Web
             </dt>
-            <dd>Fichiers <code>.mp4</code> et flux HLS <code>.m3u8</code></dd>
+            <dd>
+              Flux streaming HLS <code>.m3u8</code> et fichiers vidéo <code>.mp4</code>,
+              <code>.webm</code>, <code>.mkv</code>
+            </dd>
           </div>
         </dl>
-        <p class="sources-hint">Collez un lien ci-dessus, puis lancez l'analyse.</p>
+
+        <div class="sources-tips">
+          <span class="tip-kbd">Entrée</span> pour analyser
+          <span class="tip-sep">·</span>
+          <span class="tip-kbd">Échap</span> pour effacer
+          <span class="tip-sep">·</span>
+          <span class="tip-kbd">Ctrl+V</span> pour coller
+        </div>
       </section>
     {/if}
 
@@ -291,6 +426,15 @@
                 onDismiss={() => downloads.dismiss(entry.id)}
                 onPause={() => downloads.pause(entry.id)}
                 onResume={() => downloads.resume(entry.id)}
+                onRetry={() => {
+                  downloads.dismiss(entry.id);
+                  addDownload({
+                    url: entry.params.url,
+                    title: entry.title,
+                    formatId: entry.params.formatId ?? 'best',
+                    outputDir: entry.params.outputDir
+                  });
+                }}
                 onMoveUp={index > 0 ? () => downloads.move(entry.id, -1) : undefined}
                 onMoveDown={index < downloads.ordered.length - 1
                   ? () => downloads.move(entry.id, 1)
@@ -579,11 +723,270 @@
     padding: var(--space-5) var(--space-5) var(--space-4);
   }
 
+  .sources-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-1);
+  }
+
   .sources-heading {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  .sources-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-full);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+
+  .sources-lead {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-4);
+    line-height: 1.45;
+  }
+
+  .sources-tips {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--color-border);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .tip-kbd {
+    display: inline-flex;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-strong);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .tip-sep {
+    color: var(--color-text-subtle);
+  }
+
+  /* Carte Squelette de chargement */
+  .video-card-skeleton {
+    overflow: hidden;
+  }
+
+  .skeleton-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+    color: var(--color-text-subtle);
+  }
+
+  .skeleton-play-icon {
+    opacity: 0.35;
+    animation: lamp-pulse 1.4s ease-in-out infinite;
+  }
+
+  .skeleton-pill {
+    width: 80px;
+    height: 14px;
+    border-radius: var(--radius-full);
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+  }
+
+  .skeleton-line {
+    border-radius: var(--radius-sm);
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+  }
+
+  .skeleton-title-1 {
+    width: 90%;
+    height: 18px;
+    margin-top: var(--space-1);
+  }
+
+  .skeleton-title-2 {
+    width: 60%;
+    height: 18px;
+  }
+
+  .skeleton-author {
+    width: 35%;
+    height: 13px;
+    margin-top: var(--space-1);
+  }
+
+  .skeleton-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background-color: var(--color-surface-sunken);
+    border-top: 1px solid var(--color-border);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  }
+
+  .skeleton-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border-strong);
+    border-top-color: var(--color-accent-strong);
+    border-radius: var(--radius-full);
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  .skeleton-label {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* Carte d'erreur dédiée (Error Boundary) */
+  .error-card {
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--color-danger-border);
+    background-color: var(--color-surface);
+    box-shadow: var(--shadow-panel);
+    border-radius: var(--radius-lg);
+    animation: rise var(--duration-base) var(--ease-out);
+  }
+
+  .error-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .error-icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    background-color: var(--color-danger-wash);
+    color: var(--color-danger);
+    flex-shrink: 0;
+  }
+
+  .error-text-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .error-title {
     font-size: var(--text-sm);
     font-weight: 650;
+    color: var(--color-danger);
+  }
+
+  .error-message {
+    font-size: var(--text-sm);
     color: var(--color-text);
-    margin-bottom: var(--space-2);
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .error-dismiss-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-md);
+    color: var(--color-text-muted);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .error-dismiss-btn:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .error-advice {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background-color: var(--color-surface-sunken);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    color: var(--color-text-muted);
+  }
+
+  .advice-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-border);
+    color: var(--color-text);
+    flex-shrink: 0;
+  }
+
+  .advice-text {
+    flex: 1;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
   }
 
   .sources-list {
@@ -622,14 +1025,6 @@
     font-family: var(--font-mono);
     font-size: 0.92em;
     color: var(--color-text);
-  }
-
-  .sources-hint {
-    margin-top: var(--space-2);
-    padding-top: var(--space-3);
-    border-top: 1px solid var(--color-border);
-    font-size: var(--text-sm);
-    color: var(--color-text-muted);
   }
 
   @keyframes lamp-pulse {

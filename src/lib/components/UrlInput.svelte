@@ -6,6 +6,7 @@
   interface Props {
     onInspect?: (metadata: VideoMetadata) => void;
     onError?: (error: CommandError | null) => void;
+    onLoading?: (isLoading: boolean) => void;
     onClear?: () => void;
     disabled?: boolean;
     autofocus?: boolean;
@@ -15,6 +16,7 @@
   let {
     onInspect,
     onError,
+    onLoading,
     onClear,
     disabled = false,
     autofocus = false,
@@ -149,6 +151,8 @@
     if (debounceTimer) {
       clearTimeout(debounceTimer);
     }
+    onLoading?.(false);
+    onError?.(null);
     onClear?.();
     inputElement?.focus();
   }
@@ -173,6 +177,7 @@
 
     const targetUrl = validationResult?.canonical_url || trimmed;
     isInspecting = true;
+    onLoading?.(true);
     onError?.(null);
 
     try {
@@ -181,12 +186,22 @@
     } catch (err: unknown) {
       const message = formatErrorMessage(err);
       validationError = message;
+
+      const kind =
+        typeof err === 'object' &&
+        err !== null &&
+        'kind' in err &&
+        typeof (err as Record<string, unknown>).kind === 'string'
+          ? ((err as Record<string, unknown>).kind as CommandError['kind'])
+          : 'ExtractionFailed';
+
       onError?.({
-        kind: 'ExtractionFailed',
+        kind,
         message
       });
     } finally {
       isInspecting = false;
+      onLoading?.(false);
     }
   }
 
@@ -504,6 +519,13 @@
   .input-wrapper.is-invalid {
     border-color: var(--color-danger);
     background-color: var(--color-danger-wash);
+  }
+
+  .input-wrapper.is-invalid:focus-within {
+    border-color: var(--color-danger);
+    box-shadow:
+      0 0 0 3px color-mix(in oklch, var(--color-danger) 22%, transparent),
+      var(--shadow-panel);
   }
 
   .input-wrapper.is-disabled {

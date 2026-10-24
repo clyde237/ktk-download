@@ -96,7 +96,10 @@
             <span class="visually-hidden">{STATUS_LABELS[entry.status]} — </span>{metaLine(entry)}
           </p>
           {#if entry.status === 'failed' && entry.errorMessage}
-            <p class="item-error" title={entry.errorMessage}>{entry.errorMessage}</p>
+            <p class="item-error" title={entry.errorMessage}>
+              <span class="error-badge">Erreur</span>
+              {entry.errorMessage}
+            </p>
           {/if}
         </div>
 
@@ -261,6 +264,19 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .error-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 4px;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-danger-wash);
+    border: 1px solid var(--color-danger-border);
+    margin-right: 4px;
   }
 
   .item-actions {

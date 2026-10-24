@@ -154,7 +154,32 @@
   </div>
 
   {#if browseError}
-    <p class="destination-error" role="alert">{browseError}</p>
+    <div class="destination-error-banner" role="alert">
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="12" cy="12" r="10" />
+        <line x1="12" y1="8" x2="12" y2="12" />
+        <line x1="12" y1="16" x2="12.01" y2="16" />
+      </svg>
+      <span class="destination-error-text">{browseError}</span>
+      <button
+        type="button"
+        class="destination-error-dismiss"
+        onclick={() => (browseError = null)}
+        aria-label="Fermer l'erreur"
+      >
+        ×
+      </button>
+    </div>
   {/if}
 </div>
 
@@ -260,8 +285,28 @@
     gap: var(--space-1);
   }
 
-  .destination-error {
-    font-size: var(--text-sm);
+  .destination-error-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background-color: var(--color-danger-wash);
+    border: 1px solid var(--color-danger-border);
     color: var(--color-danger);
+    font-size: var(--text-xs);
+  }
+
+  .destination-error-text {
+    flex: 1;
+    line-height: 1.4;
+  }
+
+  .destination-error-dismiss {
+    font-size: var(--text-base);
+    line-height: 1;
+    color: var(--color-danger);
+    padding: 0 var(--space-1);
+    cursor: pointer;
   }
 </style>
