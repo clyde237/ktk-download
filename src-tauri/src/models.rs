@@ -36,7 +36,7 @@ pub struct VideoMetadata {
     pub thumbnail_url: Option<String>,
     /// Durée de la vidéo en secondes
     pub duration_seconds: Option<u64>,
-    /// Nom de la plateforme d'origine (ex: "YouTube", "MoviBox", "DirectStream")
+    /// Nom de la plateforme d'origine (ex: "YouTube", "Vimeo", "Flux Web / Direct")
     pub source_platform: String,
     /// URL d'origine fournie par l'utilisateur
     pub source_url: String,
@@ -55,6 +55,9 @@ pub struct DownloadRequest {
     pub output_dir: Option<String>,
     /// Nom personnalisé pour le fichier final (optionnel)
     pub custom_filename: Option<String>,
+    /// UUID choisi par le frontend pour corréler les événements `download-progress`
+    /// et permettre l'annulation avant la fin de la commande (généré sinon)
+    pub download_id: Option<String>,
 }
 
 /// Statut d'avancement d'un téléchargement.
@@ -64,6 +67,7 @@ pub enum DownloadStatus {
     Queued,
     Downloading,
     Processing,
+    Paused,
     Completed,
     Failed,
     Cancelled,
@@ -99,4 +103,17 @@ pub struct DownloadResult {
     pub file_size_bytes: u64,
     /// Titre de la vidéo enregistrée
     pub title: String,
+}
+
+/// Résultat retourné par la validation instantanée d'une URL.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ValidatedUrlPayload {
+    /// Indique si l'URL est conforme et autorisée
+    pub is_valid: bool,
+    /// URL nettoyée et canonique
+    pub canonical_url: String,
+    /// Domaine ou nom d'hôte extrait
+    pub domain: String,
+    /// Nom lisible de la plateforme détectée
+    pub platform: String,
 }

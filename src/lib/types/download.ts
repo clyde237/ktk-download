@@ -5,11 +5,14 @@
 export type CommandErrorKind =
   | 'InvalidUrl'
   | 'UnsupportedPlatform'
+  | 'NetworkTimeout'
   | 'NetworkError'
+  | 'VideoNotFound'
   | 'ExtractionFailed'
   | 'FileSystemError'
   | 'DownloadFailed'
   | 'DownloadCancelled'
+  | 'DownloadPaused'
   | 'Internal';
 
 export interface CommandError {
@@ -54,13 +57,15 @@ export interface DownloadRequest {
   format_id?: string;
   output_dir?: string;
   custom_filename?: string;
+  /** UUID généré côté client pour corréler les événements `download-progress` et annuler. */
+  download_id?: string;
 }
 
 /**
  * État d'avancement d'un téléchargement.
  */
 export type DownloadStatus =
-  'queued' | 'downloading' | 'processing' | 'completed' | 'failed' | 'cancelled';
+  'queued' | 'downloading' | 'processing' | 'paused' | 'completed' | 'failed' | 'cancelled';
 
 /**
  * Charge utile de l'événement Tauri `download-progress`.
@@ -83,4 +88,14 @@ export interface DownloadResult {
   file_path: string;
   file_size_bytes: number;
   title: string;
+}
+
+/**
+ * Résultat de la validation et assainissement d'une URL via `validate_url`.
+ */
+export interface ValidatedUrlPayload {
+  is_valid: boolean;
+  canonical_url: string;
+  domain: string;
+  platform: string;
 }

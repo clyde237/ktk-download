@@ -1,155 +1,1252 @@
 <script lang="ts">
+  import DestinationPicker from '$lib/components/DestinationPicker.svelte';
+  import DownloadHistory from '$lib/components/DownloadHistory.svelte';
+  import DownloadRow from '$lib/components/DownloadRow.svelte';
+  import QualitySelector from '$lib/components/QualitySelector.svelte';
+  import UrlInput from '$lib/components/UrlInput.svelte';
+  import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
+  import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { destination } from '$lib/stores/destination.svelte';
+  import { createDownloadNotifier } from '$lib/stores/download-notifications';
+  import {
+    downloads,
+    isTerminalStatus,
+    MAX_CONCURRENT_DOWNLOADS
+  } from '$lib/stores/downloads.svelte';
+  import { history, type HistoryEntry } from '$lib/stores/history.svelte';
+  import { toasts } from '$lib/stores/toasts.svelte';
+  import {
+    COMMAND_EVENT,
+    ENTRY_EVENT,
+    ENTRY_REQUEST_EVENT,
+    type EntryMessage,
+    type EntryRequest,
+    type QueueCommand
+  } from '$lib/stores/window-sync';
+  import type { CommandError, VideoMetadata } from '$lib/types/download';
+  import { formatDuration, formatErrorMessage } from '$lib/utils/format';
 
-  let name = $state('');
-  let greetMsg = $state('');
+  let inspectedVideo = $state<VideoMetadata | null>(null);
+  // Qualité choisie, conservée d'une vidéo à l'autre quand elle reste disponible.
+  let selectedQuality = $state('best');
+  let currentError = $state<CommandError | null>(null);
+  let isInspecting = $state(false);
 
-  async function greet(event: Event) {
-    event.preventDefault();
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    greetMsg = await invoke('greet', { name });
+  let isAdding = $state(false);
+  let downloadStartError = $state<string | null>(null);
+
+  type Tab = 'active' | 'finished';
+  let activeTab = $state<Tab>('active');
+
+  // Les téléchargements terminés quittent l'onglet « En cours » : ils sont dans l'historique.
+  let activeEntries = $derived(downloads.ordered.filter((e) => !isTerminalStatus(e.status)));
+
+  // Notifications du cycle de vie de chaque téléchargement de la file
+  const notifyDownload = createDownloadNotifier();
+
+  interface ExtensionDownloadPayload {
+    url: string;
+    title?: string | null;
+    format_id?: string | null;
+    output_dir?: string | null;
+  }
+
+  /**
+   * Titre d'onglet envoyé par l'extension : retire le compteur de notifications (« (12) ») et le
+   * nom du site ajouté en suffixe (« - YouTube »), qui finiraient sinon dans le nom du fichier.
+   */
+  function cleanPageTitle(raw: string | null | undefined): string {
+    const title = (raw ?? '')
+      .replace(/^\(\d+\)\s*/, '')
+      .replace(/\s+[-–|]\s+YouTube$/i, '')
+      .trim();
+    return title || 'Vidéo web';
+  }
+
+  /** Les versions précédentes de l'extension envoyaient `mp3` pour l'audio seul. */
+  function normalizeFormatId(raw: string | null | undefined): string {
+    const formatId = raw?.trim() || 'best';
+    return formatId === 'mp3' ? 'audio_only' : formatId;
+  }
+
+  // Dernier état envoyé à chaque fenêtre de suivi, pour n'émettre que les changements.
+  const lastBroadcast = new Map<string, string>();
+
+  function broadcastEntry(entry: EntryMessage) {
+    void emit<EntryMessage>(ENTRY_EVENT, entry);
+  }
+
+  onMount(() => {
+    // Qualité et dossier ont été choisis dans l'extension : ajout direct à la file.
+    const unlisteners: Promise<UnlistenFn>[] = [
+      listen<ExtensionDownloadPayload>('extension-download', (event) => {
+        const payload = event.payload;
+        void addDownload({
+          url: payload.url,
+          title: cleanPageTitle(payload.title),
+          formatId: normalizeFormatId(payload.format_id),
+          outputDir: payload.output_dir?.trim() || undefined
+        }).then((error) => {
+          if (error) toasts.error({ title: "Échec de l'ajout depuis l'extension", message: error });
+        });
+      }),
+      listen<EntryRequest>(ENTRY_REQUEST_EVENT, (event) => {
+        const entry = downloads.entries[event.payload.id];
+        broadcastEntry(entry ? $state.snapshot(entry) : { id: event.payload.id, missing: true });
+      }),
+      listen<QueueCommand>(COMMAND_EVENT, (event) => {
+        const { id, action } = event.payload;
+        if (action === 'pause') void downloads.pause(id);
+        else if (action === 'resume') downloads.resume(id);
+        else if (action === 'cancel') void downloads.cancel(id);
+        else if (action === 'retry') retryEntry(id);
+      })
+    ];
+
+    return () => {
+      for (const unlisten of unlisteners) void unlisten.then((fn) => fn());
+    };
+  });
+
+  // Les fenêtres de suivi reçoivent l'état de leur téléchargement à chaque changement.
+  $effect(() => {
+    for (const entry of downloads.ordered) {
+      const snapshot = $state.snapshot(entry);
+      const serialized = JSON.stringify(snapshot);
+      if (lastBroadcast.get(entry.id) === serialized) continue;
+      lastBroadcast.set(entry.id, serialized);
+      untrack(() => broadcastEntry(snapshot));
+    }
+  });
+
+  // L'extension propose les dossiers récents de l'application : le backend les lui transmet.
+  $effect(() => {
+    const folders = [...destination.recent];
+    void invoke('set_recent_folders', { folders }).catch((err: unknown) =>
+      console.warn('Dossiers récents non transmis :', err)
+    );
+  });
+
+  function retryEntry(id: string) {
+    const entry = downloads.entries[id];
+    if (!entry) return;
+    downloads.dismiss(id);
+    void addDownload({
+      url: entry.params.url,
+      title: entry.title,
+      formatId: entry.params.formatId ?? 'best',
+      outputDir: entry.params.outputDir
+    });
+  }
+
+  function showDownloadWindow(id: string, title: string) {
+    void invoke('open_download_window', { downloadId: id, title }).catch((err: unknown) =>
+      toasts.error({
+        title: 'Fenêtre de suivi indisponible',
+        message: formatErrorMessage(err)
+      })
+    );
+  }
+
+  $effect(() => {
+    for (const entry of downloads.ordered) {
+      // Champs dont l'évolution peut produire une notification : seuls ceux-ci relancent l'effet.
+      void [entry.status, entry.progressPercentage, entry.filePath, entry.errorMessage];
+      // Le notificateur lit et modifie la liste des toasts : hors suivi pour ne pas boucler.
+      untrack(() => notifyDownload(entry));
+    }
+  });
+
+  /**
+   * Ajoute un téléchargement à la file (nouveau ou relancé depuis l'historique).
+   * Renvoie le message d'erreur si l'ajout lui-même échoue.
+   */
+  async function addDownload(params: {
+    url: string;
+    title: string;
+    formatId: string;
+    outputDir?: string;
+  }): Promise<string | null> {
+    isAdding = true;
+    try {
+      const id = await downloads.enqueue(params.title, {
+        url: params.url,
+        formatId: params.formatId,
+        outputDir: params.outputDir,
+        fileName: params.title
+      });
+      showDownloadWindow(id, params.title);
+      if (params.outputDir) {
+        destination.remember(params.outputDir);
+      }
+      return null;
+    } catch (err: unknown) {
+      return formatErrorMessage(err);
+    } finally {
+      isAdding = false;
+    }
+  }
+
+  async function handleDownload() {
+    if (!inspectedVideo || isAdding) return;
+    downloadStartError = null;
+    downloadStartError = await addDownload({
+      url: inspectedVideo.source_url,
+      title: inspectedVideo.title,
+      formatId: selectedQuality,
+      outputDir: destination.selected ?? undefined
+    });
+    if (!downloadStartError) {
+      // Le suivi se fait dans la popup : la fenêtre principale est prête pour le lien suivant.
+      inspectedVideo = null;
+      activeTab = 'active';
+    }
+  }
+
+  // Relance avec les mêmes réglages qu'à l'origine (qualité, dossier) ; le backend revérifie tout.
+  async function handleRetry(entry: HistoryEntry) {
+    const error = await addDownload({
+      url: entry.sourceUrl,
+      title: entry.title,
+      formatId: entry.formatId,
+      outputDir: entry.outputDir
+    });
+    if (error) {
+      toasts.error({ title: 'Relance impossible', message: error });
+    }
+  }
+
+  // Lampe d'état de l'en-tête : vue d'ensemble de la file, lisible d'un coup d'œil.
+  let lampState = $derived<'idle' | 'active'>(downloads.runningCount > 0 ? 'active' : 'idle');
+
+  let deviceStatus = $derived.by(() => {
+    const running = downloads.runningCount;
+    if (running > 1) return `${running} captures en cours`;
+    if (running === 1) return 'Capture en cours';
+    return downloads.waitingCount > 0 ? 'En attente' : 'Prêt';
+  });
+
+  let errorAdvice = $derived.by(() => {
+    if (!currentError) return null;
+    switch (currentError.kind) {
+      case 'InvalidUrl':
+        return 'Vérifiez que le lien commence bien par http:// ou https:// et qu’il ne comporte pas de faute de frappe.';
+      case 'UnsupportedPlatform':
+        return 'Cette plateforme n’est pas reconnue. Pour les sites web généraux, essayez de coller le lien direct vers le fichier .mp4 ou le flux .m3u8.';
+      case 'VideoNotFound':
+        return 'La vidéo semble indisponible, supprimée, privée ou soumise à une restriction d’accès.';
+      case 'NetworkTimeout':
+      case 'NetworkError':
+        return 'Le réseau n’a pas répondu à temps. Vérifiez votre connexion Internet et réessayez.';
+      case 'ExtractionFailed':
+      default:
+        return 'yt-dlp ou l’extracteur n’a pas pu récupérer les flux média pour cette adresse.';
+    }
+  });
+
+  function handleInspect(metadata: VideoMetadata) {
+    isInspecting = false;
+    inspectedVideo = metadata;
+    const available = metadata.available_formats.map((f) => f.format_id);
+    if (!available.includes(selectedQuality)) {
+      selectedQuality = available[0] ?? 'best';
+    }
+    currentError = null;
+  }
+
+  function handleError(error: CommandError | null) {
+    isInspecting = false;
+    currentError = error;
+    if (error) {
+      inspectedVideo = null;
+    }
+  }
+
+  function handleClear() {
+    isInspecting = false;
+    inspectedVideo = null;
+    currentError = null;
   }
 </script>
 
-<main class="container">
-  <h1>Welcome to Tauri + Svelte</h1>
+<div class="app-shell">
+  <header class="app-header">
+    <div class="brand">
+      <img src="/favicon.png" alt="ktk-download" class="brand-logo" width="24" height="24" />
+      <span class="lamp" data-state={lampState} aria-hidden="true"></span>
+      <h1 class="wordmark">ktk-download</h1>
+    </div>
+    <p class="device-status" data-state={lampState}>{deviceStatus}</p>
+  </header>
 
-  <div class="row">
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo vite" alt="Vite Logo" />
-    </a>
-    <a href="https://tauri.app" target="_blank">
-      <img src="/tauri.svg" class="logo tauri" alt="Tauri Logo" />
-    </a>
-    <a href="https://svelte.dev" target="_blank">
-      <img src="/svelte.svg" class="logo svelte-kit" alt="SvelteKit Logo" />
-    </a>
-  </div>
-  <p>Click on the Tauri, Vite, and SvelteKit logos to learn more.</p>
+  <main class="app-main">
+    <section class="section-input" aria-label="Lien de la vidéo">
+      <UrlInput
+        onInspect={handleInspect}
+        onError={handleError}
+        onLoading={(loading) => {
+          isInspecting = loading;
+          if (loading) {
+            currentError = null;
+          }
+        }}
+        onClear={handleClear}
+        autofocus={true}
+      />
+    </section>
 
-  <form class="row" onsubmit={greet}>
-    <input id="greet-input" placeholder="Enter a name..." bind:value={name} />
-    <button type="submit">Greet</button>
-  </form>
-  <p>{greetMsg}</p>
-</main>
+    {#if isInspecting}
+      <section
+        class="panel video-card video-card-skeleton"
+        aria-label="Analyse de la vidéo en cours"
+        aria-busy="true"
+      >
+        <div class="video-main">
+          <div class="thumbnail skeleton-thumb">
+            <svg
+              class="skeleton-play-icon"
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              aria-hidden="true"
+            >
+              <polygon points="5 3 19 12 5 21 5 3" />
+            </svg>
+          </div>
+
+          <div class="video-details">
+            <span class="skeleton-pill"></span>
+            <div class="skeleton-line skeleton-title-1"></div>
+            <div class="skeleton-line skeleton-title-2"></div>
+            <div class="skeleton-line skeleton-author"></div>
+          </div>
+        </div>
+
+        <div class="skeleton-footer">
+          <span class="skeleton-spinner" aria-hidden="true"></span>
+          <span class="skeleton-label"
+            >Analyse du flux vidéo et résolution des qualités disponibles…</span
+          >
+        </div>
+      </section>
+    {:else if inspectedVideo}
+      <section class="panel video-card" aria-label="Vidéo analysée">
+        <div class="video-main">
+          {#if inspectedVideo.thumbnail_url}
+            <div class="thumbnail">
+              <img src={inspectedVideo.thumbnail_url} alt="" loading="lazy" />
+              {#if inspectedVideo.duration_seconds}
+                <span class="duration">{formatDuration(inspectedVideo.duration_seconds)}</span>
+              {/if}
+            </div>
+          {/if}
+
+          <div class="video-details">
+            <p class="source-tag">{inspectedVideo.source_platform}</p>
+
+            <h2 class="video-title" title={inspectedVideo.title}>{inspectedVideo.title}</h2>
+
+            {#if inspectedVideo.author}
+              <p class="video-author">{inspectedVideo.author}</p>
+            {/if}
+          </div>
+        </div>
+
+        <!-- Réglages de sortie : qualité, dossier, puis lancement de la capture -->
+        <div class="video-footer">
+          {#if inspectedVideo.available_formats.length > 1}
+            <QualitySelector
+              options={inspectedVideo.available_formats}
+              value={selectedQuality}
+              onChange={(formatId) => (selectedQuality = formatId)}
+            />
+          {/if}
+
+          <div class="output-row">
+            <DestinationPicker />
+
+            <button type="button" class="download-btn" onclick={handleDownload} disabled={isAdding}>
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <!-- Emplacements tous occupés : le téléchargement attendra son tour dans la file -->
+              <span>
+                {downloads.runningCount >= MAX_CONCURRENT_DOWNLOADS
+                  ? 'Ajouter à la file'
+                  : 'Télécharger'}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {#if downloadStartError}
+          <p class="download-start-error" role="alert">{downloadStartError}</p>
+        {/if}
+      </section>
+    {:else if currentError}
+      <section class="panel error-card" role="alert" aria-live="assertive">
+        <div class="error-header">
+          <div class="error-icon-box" aria-hidden="true">
+            <svg
+              width="20"
+              height="20"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <div class="error-text-group">
+            <h2 class="error-title">Échec de l'analyse vidéo</h2>
+            <p class="error-message">{currentError.message}</p>
+          </div>
+          <button
+            type="button"
+            class="error-dismiss-btn"
+            onclick={() => (currentError = null)}
+            aria-label="Fermer ce message d'erreur"
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2.2"
+              stroke-linecap="round"
+              aria-hidden="true"
+            >
+              <line x1="18" y1="6" x2="6" y2="18" />
+              <line x1="6" y1="6" x2="18" y2="18" />
+            </svg>
+          </button>
+        </div>
+
+        {#if errorAdvice}
+          <div class="error-advice">
+            <span class="advice-badge">Conseil</span>
+            <span class="advice-text">{errorAdvice}</span>
+          </div>
+        {/if}
+      </section>
+    {:else if downloads.ordered.length === 0 && history.entries.length === 0}
+      <section class="panel sources" aria-labelledby="sources-heading">
+        <div class="sources-header">
+          <h2 id="sources-heading" class="sources-heading">Prêt à télécharger</h2>
+          <span class="sources-badge">Multi-sources</span>
+        </div>
+        <p class="sources-lead">
+          Collez le lien d'une vidéo dans le champ ci-dessus pour inspecter ses formats et lancer la
+          capture haute vitesse.
+        </p>
+
+        <dl class="sources-list">
+          <div class="source-row">
+            <dt>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <path
+                  d="M23.498 6.186a3.016 3.016 0 0 0-2.122-2.136C19.505 3.545 12 3.545 12 3.545s-7.505 0-9.377.505A3.017 3.017 0 0 0 .502 6.186C0 8.07 0 12 0 12s0 3.93.502 5.814a3.016 3.016 0 0 0 2.122 2.136c1.871.505 9.376.505 9.376.505s7.505 0 9.377-.505a3.015 3.015 0 0 0 2.122-2.136C24 15.93 24 12 24 12s0-3.93-.502-5.814zM9.545 15.568V8.432L15.818 12l-6.273 3.568z"
+                />
+              </svg>
+              YouTube
+            </dt>
+            <dd>Vidéos standard, Shorts, listes et conversion audio MP3</dd>
+          </div>
+          <div class="source-row">
+            <dt>
+              <svg
+                width="18"
+                height="18"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                aria-hidden="true"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <polygon points="10 8 16 12 10 16 10 8" />
+              </svg>
+              Flux directs & Web
+            </dt>
+            <dd>
+              Flux streaming HLS <code>.m3u8</code> et fichiers vidéo <code>.mp4</code>,
+              <code>.webm</code>, <code>.mkv</code>
+            </dd>
+          </div>
+        </dl>
+
+        <div class="sources-tips">
+          <span class="tip-kbd">Entrée</span> pour analyser
+          <span class="tip-sep">·</span>
+          <span class="tip-kbd">Échap</span> pour effacer
+          <span class="tip-sep">·</span>
+          <span class="tip-kbd">Ctrl+V</span> pour coller
+        </div>
+      </section>
+    {/if}
+
+    {#if activeEntries.length > 0 || history.entries.length > 0}
+      <section class="manager" aria-label="Téléchargements">
+        <div class="tabs" role="tablist" aria-label="Téléchargements">
+          <button
+            type="button"
+            role="tab"
+            id="tab-active"
+            class="tab"
+            aria-selected={activeTab === 'active'}
+            aria-controls="panel-active"
+            tabindex={activeTab === 'active' ? 0 : -1}
+            onclick={() => (activeTab = 'active')}
+            onkeydown={(e) => {
+              if (e.key === 'ArrowRight') {
+                activeTab = 'finished';
+                document.getElementById('tab-finished')?.focus();
+              }
+            }}
+          >
+            En cours <span class="tab-count">{activeEntries.length}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="tab-finished"
+            class="tab"
+            aria-selected={activeTab === 'finished'}
+            aria-controls="panel-finished"
+            tabindex={activeTab === 'finished' ? 0 : -1}
+            onclick={() => (activeTab = 'finished')}
+            onkeydown={(e) => {
+              if (e.key === 'ArrowLeft') {
+                activeTab = 'active';
+                document.getElementById('tab-active')?.focus();
+              }
+            }}
+          >
+            Terminés <span class="tab-count">{history.entries.length}</span>
+          </button>
+        </div>
+
+        {#if activeTab === 'active'}
+          <div id="panel-active" role="tabpanel" aria-labelledby="tab-active" class="tab-panel">
+            {#if activeEntries.length > 0}
+              <ol class="rows">
+                {#each activeEntries as entry, index (entry.id)}
+                  <DownloadRow
+                    {entry}
+                    onShow={() => showDownloadWindow(entry.id, entry.title)}
+                    onPause={() => downloads.pause(entry.id)}
+                    onResume={() => downloads.resume(entry.id)}
+                    onCancel={() => downloads.cancel(entry.id)}
+                    onMoveUp={index > 0 ? () => downloads.move(entry.id, -1) : undefined}
+                    onMoveDown={index < activeEntries.length - 1
+                      ? () => downloads.move(entry.id, 1)
+                      : undefined}
+                  />
+                {/each}
+              </ol>
+            {:else}
+              <p class="tab-empty">
+                Aucun téléchargement en cours. Collez un lien ci-dessus ou utilisez l'extension du
+                navigateur.
+              </p>
+            {/if}
+          </div>
+        {:else}
+          <div
+            id="panel-finished"
+            role="tabpanel"
+            aria-labelledby="tab-finished"
+            class="tab-panel tab-panel-bare"
+          >
+            {#if history.entries.length > 0}
+              <DownloadHistory onRetry={handleRetry} />
+            {:else}
+              <p class="tab-empty">Les téléchargements terminés apparaîtront ici.</p>
+            {/if}
+          </div>
+        {/if}
+      </section>
+    {/if}
+  </main>
+</div>
 
 <style>
-  .logo.vite:hover {
-    filter: drop-shadow(0 0 2em #747bff);
-  }
-
-  .logo.svelte-kit:hover {
-    filter: drop-shadow(0 0 2em #ff3e00);
-  }
-
-  :root {
-    font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
-    font-size: 16px;
-    line-height: 24px;
-    font-weight: 400;
-
-    color: #0f0f0f;
-    background-color: #f6f6f6;
-
-    font-synthesis: none;
-    text-rendering: optimizeLegibility;
-    -webkit-font-smoothing: antialiased;
-    -moz-osx-font-smoothing: grayscale;
-    -webkit-text-size-adjust: 100%;
-  }
-
-  .container {
-    margin: 0;
-    padding-top: 10vh;
+  .app-shell {
+    min-height: 100%;
     display: flex;
     flex-direction: column;
-    justify-content: center;
-    text-align: center;
   }
 
-  .logo {
-    height: 6em;
-    padding: 1.5em;
-    will-change: filter;
-    transition: 0.75s;
-  }
-
-  .logo.tauri:hover {
-    filter: drop-shadow(0 0 2em #24c8db);
-  }
-
-  .row {
+  /* En-tête : nom de l'appareil et lampe d'état */
+  .app-header {
     display: flex;
-    justify-content: center;
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-4) var(--space-6);
+    background-color: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
   }
 
-  a {
+  .brand {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    min-width: 0;
+  }
+
+  .brand-logo {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-sm, 6px);
+    flex-shrink: 0;
+    box-shadow: 0 1px 2px oklch(0.2 0.01 var(--neutral-hue) / 0.1);
+  }
+
+  .wordmark {
+    font-size: var(--text-xl);
+    font-weight: 800;
+    font-stretch: 125%;
+    letter-spacing: -0.02em;
+    line-height: 1;
+    color: var(--color-text);
+  }
+
+  .lamp {
+    width: 10px;
+    height: 10px;
+    border-radius: var(--radius-full);
+    flex-shrink: 0;
+    background-color: var(--color-border-strong);
+    box-shadow: inset 0 0 0 1px oklch(0.22 0.012 var(--neutral-hue) / 0.15);
+    transition: background-color var(--duration-base) var(--ease-out);
+  }
+
+  .lamp[data-state='active'] {
+    background-color: var(--color-accent);
+    box-shadow: 0 0 0 3px oklch(0.64 0.19 var(--signal-hue) / 0.22);
+    animation: lamp-pulse 1.4s ease-in-out infinite;
+  }
+
+  .device-status {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
     font-weight: 500;
-    color: #646cff;
-    text-decoration: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
+    white-space: nowrap;
   }
 
-  a:hover {
-    color: #535bf2;
+  .device-status[data-state='active'] {
+    color: var(--color-accent-strong);
   }
 
-  h1 {
+  .app-main {
+    width: 100%;
+    max-width: 760px;
+    margin: 0 auto;
+    /* Marge basse : le bas de page défile au-dessus d'un toast affiché en bas à droite. */
+    padding: var(--space-8) var(--space-6) calc(var(--space-12) + 72px);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
+  }
+
+  /* Gestionnaire : onglets « En cours » / « Terminés » */
+  .manager {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .tabs {
+    display: flex;
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .tab {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-bottom: -1px;
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 2px solid transparent;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--color-text-muted);
+    transition:
+      color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out);
+  }
+
+  .tab:hover {
+    color: var(--color-text);
+  }
+
+  .tab[aria-selected='true'] {
+    color: var(--color-text);
+    border-bottom-color: var(--color-accent-strong);
+  }
+
+  .tab-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    color: var(--color-text-muted);
+  }
+
+  .tab-panel {
+    padding: var(--space-2) var(--space-4) var(--space-3);
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+  }
+
+  /* L'historique a déjà son propre cadre */
+  .tab-panel-bare {
+    padding: 0;
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
+
+  .rows {
+    list-style: none;
+  }
+
+  .rows :global(.row:first-child) {
+    border-top: none;
+  }
+
+  .tab-empty {
+    padding: var(--space-4) 0;
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
     text-align: center;
   }
 
-  input,
-  button {
-    border-radius: 8px;
-    border: 1px solid transparent;
-    padding: 0.6em 1.2em;
-    font-size: 1em;
+  .panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel);
+    animation: rise var(--duration-base) var(--ease-out);
+  }
+
+  /* Vidéo analysée */
+  .video-card {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .video-main {
+    display: flex;
+    gap: var(--space-5);
+    padding: var(--space-4);
+  }
+
+  .video-footer {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    padding: var(--space-3) var(--space-4) var(--space-4);
+    border-top: 1px solid var(--color-border);
+    background-color: var(--color-surface-sunken);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  }
+
+  .thumbnail {
+    position: relative;
+    width: 208px;
+    aspect-ratio: 16 / 9;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background-color: var(--color-surface-sunken);
+    flex-shrink: 0;
+  }
+
+  .thumbnail img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .duration {
+    position: absolute;
+    right: var(--space-2);
+    bottom: var(--space-2);
+    padding: 1px var(--space-1);
+    border-radius: var(--radius-sm);
+    background-color: oklch(0.22 0.012 var(--neutral-hue) / 0.85);
+    color: var(--color-on-accent);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .video-details {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    flex: 1;
+  }
+
+  .source-tag {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
     font-weight: 500;
-    font-family: inherit;
-    color: #0f0f0f;
-    background-color: #ffffff;
-    transition: border-color 0.25s;
-    box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--color-text-muted);
   }
 
-  button {
-    cursor: pointer;
+  .video-title {
+    font-size: var(--text-lg);
+    font-weight: 650;
+    line-height: 1.3;
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    -webkit-box-orient: vertical;
   }
 
-  button:hover {
-    border-color: #396cd8;
-  }
-  button:active {
-    border-color: #396cd8;
-    background-color: #e8e8e8;
+  .video-author {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
   }
 
-  input,
-  button {
-    outline: none;
+  .output-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3);
   }
 
-  #greet-input {
-    margin-right: 5px;
+  .download-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: var(--space-2) var(--space-4);
+    border-radius: var(--radius-md);
+    background-color: var(--color-accent-strong);
+    color: var(--color-on-accent);
+    font-size: var(--text-sm);
+    font-weight: 650;
+    box-shadow: var(--shadow-control);
+    transition: background-color var(--duration-fast) var(--ease-out);
   }
 
-  @media (prefers-color-scheme: dark) {
-    :root {
-      color: #f6f6f6;
-      background-color: #2f2f2f;
+  .download-btn:hover:not(:disabled) {
+    background-color: var(--color-accent-stronger);
+  }
+
+  .download-btn:disabled {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text-muted);
+    box-shadow: none;
+    cursor: not-allowed;
+  }
+
+  .download-start-error {
+    padding: 0 var(--space-4) var(--space-4);
+    background-color: var(--color-surface-sunken);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+    font-size: var(--text-sm);
+    color: var(--color-danger);
+  }
+
+  /* État vide : sources prises en charge */
+  .sources {
+    padding: var(--space-5) var(--space-5) var(--space-4);
+  }
+
+  .sources-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin-bottom: var(--space-1);
+  }
+
+  .sources-heading {
+    font-size: var(--text-base);
+    font-weight: 700;
+    color: var(--color-text);
+  }
+
+  .sources-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-full);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+
+  .sources-lead {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+    margin-bottom: var(--space-4);
+    line-height: 1.45;
+  }
+
+  .sources-tips {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding-top: var(--space-3);
+    border-top: 1px solid var(--color-border);
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  .tip-kbd {
+    display: inline-flex;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-surface-sunken);
+    border: 1px solid var(--color-border-strong);
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .tip-sep {
+    color: var(--color-text-subtle);
+  }
+
+  /* Carte Squelette de chargement */
+  .video-card-skeleton {
+    overflow: hidden;
+  }
+
+  .skeleton-thumb {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+    color: var(--color-text-subtle);
+  }
+
+  .skeleton-play-icon {
+    opacity: 0.35;
+    animation: lamp-pulse 1.4s ease-in-out infinite;
+  }
+
+  .skeleton-pill {
+    width: 80px;
+    height: 14px;
+    border-radius: var(--radius-full);
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+  }
+
+  .skeleton-line {
+    border-radius: var(--radius-sm);
+    background: linear-gradient(
+      90deg,
+      var(--color-surface-sunken) 25%,
+      var(--color-surface-hover) 50%,
+      var(--color-surface-sunken) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.8s infinite;
+  }
+
+  .skeleton-title-1 {
+    width: 90%;
+    height: 18px;
+    margin-top: var(--space-1);
+  }
+
+  .skeleton-title-2 {
+    width: 60%;
+    height: 18px;
+  }
+
+  .skeleton-author {
+    width: 35%;
+    height: 13px;
+    margin-top: var(--space-1);
+  }
+
+  .skeleton-footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    background-color: var(--color-surface-sunken);
+    border-top: 1px solid var(--color-border);
+    border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  }
+
+  .skeleton-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--color-border-strong);
+    border-top-color: var(--color-accent-strong);
+    border-radius: var(--radius-full);
+    animation: spin 0.8s linear infinite;
+    flex-shrink: 0;
+  }
+
+  .skeleton-label {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
+  /* Carte d'erreur dédiée (Error Boundary) */
+  .error-card {
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--color-danger-border);
+    background-color: var(--color-surface);
+    box-shadow: var(--shadow-panel);
+    border-radius: var(--radius-lg);
+    animation: rise var(--duration-base) var(--ease-out);
+  }
+
+  .error-header {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3);
+  }
+
+  .error-icon-box {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-md);
+    background-color: var(--color-danger-wash);
+    color: var(--color-danger);
+    flex-shrink: 0;
+  }
+
+  .error-text-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .error-title {
+    font-size: var(--text-sm);
+    font-weight: 650;
+    color: var(--color-danger);
+  }
+
+  .error-message {
+    font-size: var(--text-sm);
+    color: var(--color-text);
+    line-height: 1.45;
+    word-break: break-word;
+  }
+
+  .error-dismiss-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 28px;
+    border-radius: var(--radius-md);
+    color: var(--color-text-muted);
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      color var(--duration-fast) var(--ease-out);
+  }
+
+  .error-dismiss-btn:hover {
+    background-color: var(--color-surface-hover);
+    color: var(--color-text);
+  }
+
+  .error-advice {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    margin-top: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-md);
+    background-color: var(--color-surface-sunken);
+    font-size: var(--text-xs);
+    line-height: 1.45;
+    color: var(--color-text-muted);
+  }
+
+  .advice-badge {
+    font-family: var(--font-mono);
+    font-size: var(--text-2xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 1px 6px;
+    border-radius: var(--radius-sm);
+    background-color: var(--color-border);
+    color: var(--color-text);
+    flex-shrink: 0;
+  }
+
+  .advice-text {
+    flex: 1;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: -200% 0;
+    }
+    100% {
+      background-position: 200% 0;
+    }
+  }
+
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .sources-list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .source-row {
+    display: grid;
+    grid-template-columns: 11rem 1fr;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-3) 0;
+    border-top: 1px solid var(--color-border);
+  }
+
+  .source-row dt {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+
+  .source-row dt svg {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+
+  .source-row dd {
+    font-size: var(--text-sm);
+    color: var(--color-text-muted);
+  }
+
+  .source-row code {
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+    color: var(--color-text);
+  }
+
+  @keyframes lamp-pulse {
+    50% {
+      box-shadow: 0 0 0 5px oklch(0.64 0.19 var(--signal-hue) / 0.08);
+    }
+  }
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+  }
+
+  @media (max-width: 640px) {
+    .app-header {
+      padding: var(--space-3) var(--space-4);
     }
 
-    a:hover {
-      color: #24c8db;
+    .app-main {
+      padding: var(--space-6) var(--space-4) var(--space-10);
     }
 
-    input,
-    button {
-      color: #ffffff;
-      background-color: #0f0f0f98;
+    .video-main {
+      flex-direction: column;
     }
-    button:active {
-      background-color: #0f0f0f69;
+
+    .output-row {
+      flex-direction: column;
+      align-items: stretch;
+    }
+
+    .thumbnail {
+      width: 100%;
+    }
+
+    .source-row {
+      grid-template-columns: 1fr;
+      gap: var(--space-1);
+    }
+  }
+
+  /* Modal de confirmation de capture extension */
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
     }
   }
 </style>

@@ -1,113 +1,165 @@
-use tauri::{AppHandle, Emitter};
-use url::Url;
+use std::sync::Arc;
+
+use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use uuid::Uuid;
 
+use crate::downloader::{self, DownloadRegistry};
 use crate::error::CommandError;
+use crate::extractor;
 use crate::models::{
-    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, VideoFormat,
+    DownloadProgressPayload, DownloadRequest, DownloadResult, DownloadStatus, ValidatedUrlPayload,
     VideoMetadata,
 };
+use crate::quality::QualityPreset;
+use crate::validator::{self, VideoPlatform};
+
+/// Commande IPC : Valide et assainit instantanément une URL sans bloquer l'interface.
+///
+/// Permet au frontend de vérifier en temps réel la validité du format et d'identifier la plateforme
+/// (YouTube, Vimeo, flux direct, etc.) dès la frappe ou le collage.
+#[tauri::command]
+pub fn validate_url(url: String) -> Result<ValidatedUrlPayload, CommandError> {
+    let validated = validator::validate_and_sanitize_url(&url)?;
+    Ok(ValidatedUrlPayload {
+        is_valid: true,
+        canonical_url: validated.canonical_url,
+        domain: validated.domain,
+        platform: validated.platform.as_str().to_string(),
+    })
+}
+
+/// Commande IPC : Annule un téléchargement en cours ou en pause via son identifiant.
+///
+/// Renvoie `false` si le téléchargement n'est ni actif ni en pause (déjà terminé ou inconnu).
+#[tauri::command]
+pub async fn cancel_download(
+    registry: State<'_, DownloadRegistry>,
+    download_id: String,
+) -> Result<bool, CommandError> {
+    if registry.cancel(&download_id) {
+        return Ok(true);
+    }
+    // En pause : plus de processus à arrêter, seulement ses fichiers partiels à supprimer.
+    match registry.take_paused(&download_id) {
+        Some(target_path) => {
+            extractor::discard_partial_download(&target_path).await;
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
+/// Commande IPC : Ouvre (ou ramène au premier plan) la fenêtre de suivi d'un téléchargement.
+///
+/// Une fenêtre par téléchargement, à la manière d'un gestionnaire de téléchargements : la fermer
+/// n'arrête pas le téléchargement. Asynchrone, car créer une fenêtre depuis une commande
+/// synchrone bloque sous Windows.
+#[tauri::command]
+pub async fn open_download_window(
+    app: AppHandle,
+    download_id: String,
+    title: String,
+) -> Result<(), CommandError> {
+    let id = resolve_download_id(Some(&download_id))?;
+    let label = format!("download-{}", id);
+
+    if let Some(window) = app.get_webview_window(&label) {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(());
+    }
+
+    let short_title: String = title.chars().take(60).collect();
+    WebviewWindowBuilder::new(
+        &app,
+        &label,
+        WebviewUrl::App(format!("download?id={}", id).into()),
+    )
+    .title(format!("{} — ktk-download", short_title.trim()))
+    .inner_size(500.0, 360.0)
+    .min_inner_size(420.0, 320.0)
+    .center()
+    .focused(true)
+    .build()
+    .map_err(|e| CommandError::Internal(format!("Ouverture de la fenêtre impossible : {}", e)))?;
+    Ok(())
+}
+
+/// Commande IPC : Transmet les dossiers récents de l'interface, proposés ensuite par l'extension.
+///
+/// Seuls des chemins absolus vers des dossiers existants sont retenus.
+#[tauri::command]
+pub fn set_recent_folders(
+    recent: State<'_, crate::server::RecentFolders>,
+    folders: Vec<String>,
+) -> Result<(), CommandError> {
+    let valid: Vec<String> = folders
+        .into_iter()
+        .filter(|f| validate_output_dir(Some(f)).ok().flatten().is_some())
+        .take(10)
+        .collect();
+    *recent.0.lock().unwrap() = valid;
+    Ok(())
+}
+
+/// Commande IPC : Met en pause un téléchargement en cours en conservant ses fichiers partiels.
+///
+/// La reprise se fait en relançant `download_video` avec le même identifiant. Renvoie `false`
+/// si le téléchargement n'est pas actif.
+#[tauri::command]
+pub fn pause_download(
+    registry: State<'_, DownloadRegistry>,
+    download_id: String,
+) -> Result<bool, CommandError> {
+    Ok(registry.pause(&download_id))
+}
 
 /// Commande IPC : Analyse une URL vidéo et renvoie ses métadonnées ainsi que les qualités disponibles.
 ///
-/// Cette commande effectue une validation préliminaire de l'URL et détecte la plateforme
-/// (YouTube, MoviBox ou flux direct) avant d'extraire les formats disponibles.
+/// Cette commande valide et assainit d'abord l'URL, puis utilise le moteur d'extraction `yt-dlp`
+/// (avec analyse HTML/HLS de secours pour les fichiers et lecteurs web génériques) pour résoudre
+/// dynamiquement les informations vidéo. La règle est la même qu'au téléchargement : une page de
+/// plateforme n'est jamais analysée ni téléchargée en direct.
 #[tauri::command]
 pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
-    let trimmed_url = url.trim();
-    if trimmed_url.is_empty() {
-        return Err(CommandError::InvalidUrl(
-            "L'adresse URL ne peut pas être vide.".to_string(),
-        ));
-    }
-
-    // Validation syntaxique de l'URL
-    let parsed_url = Url::parse(trimmed_url)
-        .map_err(|e| CommandError::InvalidUrl(format!("Format d'adresse invalide : {}", e)))?;
-
-    if parsed_url.scheme() != "http" && parsed_url.scheme() != "https" {
-        return Err(CommandError::InvalidUrl(
-            "Seuls les protocoles HTTP et HTTPS sont pris en charge.".to_string(),
-        ));
-    }
-
-    let host = parsed_url.host_str().unwrap_or("").to_lowercase();
-
-    // Détection de la plateforme source
-    let (platform_name, estimated_title) =
-        if host.contains("youtube.com") || host.contains("youtu.be") {
-            ("YouTube".to_string(), "Vidéo YouTube".to_string())
-        } else if host.contains("movibox.net") || host.contains("movibox") {
-            ("MoviBox".to_string(), "Contenu MoviBox".to_string())
-        } else {
-            ("Flux Web / Direct".to_string(), "Vidéo Web".to_string())
-        };
-
-    // Formats types préconfigurés pour la structure initiale
-    let formats = vec![
-        VideoFormat {
-            format_id: "best".to_string(),
-            label: "Meilleure qualité disponible (Auto)".to_string(),
-            resolution: Some("1080p".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "720p".to_string(),
-            label: "720p HD".to_string(),
-            resolution: Some("1280x720".to_string()),
-            extension: "mp4".to_string(),
-            file_size_bytes: None,
-            has_video: true,
-            has_audio: true,
-            direct_url: None,
-        },
-        VideoFormat {
-            format_id: "audio_only".to_string(),
-            label: "Audio uniquement (MP3)".to_string(),
-            resolution: None,
-            extension: "mp3".to_string(),
-            file_size_bytes: None,
-            has_video: false,
-            has_audio: true,
-            direct_url: None,
-        },
-    ];
-
-    Ok(VideoMetadata {
-        id: Uuid::new_v4().to_string(),
-        title: estimated_title,
-        description: Some(format!("Flux analysé depuis {}", host)),
-        author: None,
-        thumbnail_url: None,
-        duration_seconds: None,
-        source_platform: platform_name,
-        source_url: trimmed_url.to_string(),
-        available_formats: formats,
-    })
+    let validated = validator::validate_and_sanitize_url(&url)?;
+    extractor::extract_metadata(
+        &validated.canonical_url,
+        allows_direct_stream(&validated.platform),
+    )
+    .await
 }
 
 /// Commande IPC : Initialise et orchestre le téléchargement d'une vidéo avec suivi de progression.
 ///
-/// Cette commande émet des événements `download-progress` via l'AppHandle Tauri pour informer
-/// l'interface en temps réel de l'avancement.
+/// Valide rigoureusement l'URL avant de lancer le téléchargement avec `yt-dlp` ou le moteur
+/// de streaming asynchrone natif.
 #[tauri::command]
-pub async fn download_video(
-    app: AppHandle,
+pub async fn download_video<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    registry: State<'_, DownloadRegistry>,
     request: DownloadRequest,
 ) -> Result<DownloadResult, CommandError> {
-    let trimmed_url = request.url.trim();
-    if trimmed_url.is_empty() {
-        return Err(CommandError::InvalidUrl(
-            "L'adresse URL à télécharger est requise.".to_string(),
+    let validated = validator::validate_and_sanitize_url(&request.url)?;
+    let output_dir = validate_output_dir(request.output_dir.as_deref())?;
+    let quality = QualityPreset::parse(request.format_id.as_deref().unwrap_or_default())?;
+
+    let download_id = resolve_download_id(request.download_id.as_deref())?;
+    if registry.is_active(&download_id) {
+        return Err(CommandError::Internal(
+            "Un téléchargement portant cet identifiant est déjà en cours.".to_string(),
         ));
     }
+    let control = registry.register(&download_id);
+    // Reprise après une pause : mêmes fichiers partiels, donc même chemin cible.
+    let resumed_target = registry.take_paused(&download_id);
 
-    let download_id = Uuid::new_v4().to_string();
-    let format = request.format_id.as_deref().unwrap_or("best");
+    let extension = if quality.is_audio_only() {
+        "mp3"
+    } else {
+        "mp4"
+    };
 
     // Notification initiale d'entrée en file d'attente
     let initial_payload = DownloadProgressPayload {
@@ -120,46 +172,202 @@ pub async fn download_video(
         eta_seconds: None,
     };
 
-    app.emit("download-progress", &initial_payload)
-        .map_err(|e| {
-            CommandError::Internal(format!("Échec de transmission de l'événement : {}", e))
-        })?;
+    let _ = app.emit("download-progress", &initial_payload);
 
-    // Résolution du répertoire de destination
-    let destination_dir = request
-        .output_dir
-        .unwrap_or_else(|| "Downloads".to_string());
+    // Résolution du chemin de sortie sécurisé
+    let target_path = resumed_target.unwrap_or_else(|| {
+        downloader::resolve_output_path(
+            output_dir.as_deref(),
+            request.custom_filename.as_deref(),
+            &download_id[..8],
+            extension,
+        )
+    });
 
-    let final_filename = request
-        .custom_filename
-        .unwrap_or_else(|| format!("video_{}.mp4", &download_id[..8]));
-
-    let target_path = format!("{}/{}", destination_dir, final_filename);
-
-    // Émission d'un état de complétion (structure prête pour le moteur de téléchargement réel)
-    let completed_payload = DownloadProgressPayload {
-        download_id: download_id.clone(),
-        status: DownloadStatus::Completed,
-        progress_percentage: 100.0,
-        downloaded_bytes: 1024 * 1024 * 15,
-        total_bytes: Some(1024 * 1024 * 15),
-        speed_bytes_per_sec: 1024 * 1024 * 2,
-        eta_seconds: Some(0),
+    // Le streaming direct enregistre le fichier tel quel : il ne sait ni plafonner la qualité
+    // ni extraire l'audio, il n'est donc possible qu'avec la qualité par défaut.
+    let direct_stream_allowed =
+        allows_direct_stream(&validated.platform) && quality == QualityPreset::Best;
+    let stream_directly = || {
+        downloader::download_stream(
+            &app,
+            &download_id,
+            &validated.canonical_url,
+            &target_path,
+            Some(Arc::clone(&control)),
+        )
     };
 
-    let _ = app.emit("download-progress", &completed_payload);
+    // yt-dlp en priorité ; le streaming direct seulement pour un fichier média servi tel quel
+    let download_result = if extractor::find_ytdlp_binary().is_some() {
+        match extractor::download_with_ytdlp(
+            &app,
+            &download_id,
+            &validated.canonical_url,
+            quality,
+            &target_path,
+            Some(Arc::clone(&control)),
+        )
+        .await
+        {
+            Ok(file) => Ok(file),
+            // Une annulation ou une pause volontaire ne doit pas relancer un autre moteur.
+            Err(CommandError::DownloadCancelled) => Err(CommandError::DownloadCancelled),
+            Err(CommandError::DownloadPaused) => Err(CommandError::DownloadPaused),
+            Err(e) if direct_stream_allowed => {
+                log::warn!(
+                    "Échec yt-dlp ({:?}), tentative avec le moteur de streaming direct...",
+                    e
+                );
+                stream_directly()
+                    .await
+                    .map(|bytes| (target_path.clone(), bytes))
+            }
+            Err(e) => Err(e),
+        }
+    } else if direct_stream_allowed {
+        stream_directly()
+            .await
+            .map(|bytes| (target_path.clone(), bytes))
+    } else if allows_direct_stream(&validated.platform) {
+        Err(CommandError::DownloadFailed(
+            "yt-dlp est requis pour choisir une qualité ou extraire l'audio, mais il est introuvable sur le système.".to_string(),
+        ))
+    } else {
+        Err(CommandError::DownloadFailed(format!(
+            "yt-dlp est requis pour télécharger depuis {}, mais il est introuvable sur le système.",
+            validated.platform.as_str()
+        )))
+    };
+
+    registry.unregister(&download_id);
+    if matches!(download_result, Err(CommandError::DownloadPaused)) {
+        registry.remember_paused(&download_id, target_path.clone());
+    }
+
+    let (file_path, total_bytes) = download_result?;
+    let file_path_str = file_path.to_string_lossy().to_string();
+    let title = file_path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| format!("Vidéo ({})", quality.id()));
 
     Ok(DownloadResult {
         download_id,
-        file_path: target_path,
-        file_size_bytes: 1024 * 1024 * 15,
-        title: format!("Vidéo ({})", format),
+        file_path: file_path_str,
+        file_size_bytes: total_bytes,
+        title,
     })
+}
+
+/// Le streaming direct enregistre la réponse HTTP telle quelle : il ne convient qu'à un fichier
+/// média servi directement, jamais à la page d'une plateforme vidéo (YouTube, Vimeo…), dont
+/// seul yt-dlp sait extraire le flux.
+fn allows_direct_stream(platform: &VideoPlatform) -> bool {
+    matches!(platform, VideoPlatform::GenericWeb(_))
+}
+
+/// Vérifie le dossier de destination choisi dans l'interface avant toute écriture.
+///
+/// Le chemin vient du frontend : il doit être absolu et désigner un dossier existant. Aucun dossier
+/// n'est créé à partir de cette valeur ; `None` (ou une chaîne vide) garde le dossier par défaut.
+fn validate_output_dir(requested: Option<&str>) -> Result<Option<String>, CommandError> {
+    let Some(raw) = requested.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Ok(None);
+    };
+
+    let path = std::path::Path::new(raw);
+    if !path.is_absolute() {
+        return Err(CommandError::FileSystemError(
+            "Le dossier de destination doit être un chemin absolu.".to_string(),
+        ));
+    }
+    if !path.is_dir() {
+        return Err(CommandError::FileSystemError(format!(
+            "Le dossier de destination est introuvable : {}",
+            raw
+        )));
+    }
+
+    Ok(Some(raw.to_string()))
+}
+
+/// Valide l'identifiant fourni par le frontend (UUID) ou en génère un nouveau.
+///
+/// L'identifiant est renvoyé sous forme canonique (minuscules avec tirets), identique à celle
+/// produite par `crypto.randomUUID()`, pour que le frontend reconnaisse ses événements.
+fn resolve_download_id(requested: Option<&str>) -> Result<String, CommandError> {
+    match requested {
+        Some(raw) => Uuid::parse_str(raw.trim())
+            .map(|id| id.to_string())
+            .map_err(|_| {
+                CommandError::Internal("Identifiant de téléchargement invalide.".to_string())
+            }),
+        None => Ok(Uuid::new_v4().to_string()),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_direct_stream_only_for_generic_web() {
+        assert!(allows_direct_stream(&VideoPlatform::GenericWeb(
+            "cdn.example.org".to_string()
+        )));
+        assert!(!allows_direct_stream(&VideoPlatform::YouTube));
+        assert!(!allows_direct_stream(&VideoPlatform::Vimeo));
+    }
+
+    #[test]
+    fn test_validate_output_dir_defaults_when_empty() {
+        assert_eq!(validate_output_dir(None).unwrap(), None);
+        assert_eq!(validate_output_dir(Some("   ")).unwrap(), None);
+    }
+
+    #[test]
+    fn test_validate_output_dir_accepts_existing_absolute_dir() {
+        let dir = std::env::temp_dir();
+        let dir_str = dir.to_str().unwrap();
+        assert_eq!(
+            validate_output_dir(Some(dir_str)).unwrap(),
+            Some(dir_str.to_string())
+        );
+    }
+
+    #[test]
+    fn test_validate_output_dir_rejects_relative_and_missing() {
+        assert!(matches!(
+            validate_output_dir(Some("../Videos")),
+            Err(CommandError::FileSystemError(_))
+        ));
+        let missing = std::env::temp_dir().join("ktk-download-dossier-inexistant-7f3a");
+        assert!(matches!(
+            validate_output_dir(missing.to_str()),
+            Err(CommandError::FileSystemError(_))
+        ));
+    }
+
+    #[test]
+    fn test_resolve_download_id_keeps_client_uuid() {
+        let id = "3f2b8c1e-9d4a-4e6b-8f1a-2c3d4e5f6a7b";
+        assert_eq!(resolve_download_id(Some(id)).unwrap(), id);
+    }
+
+    #[test]
+    fn test_resolve_download_id_rejects_invalid_value() {
+        assert!(matches!(
+            resolve_download_id(Some("../../etc/passwd")),
+            Err(CommandError::Internal(_))
+        ));
+    }
+
+    #[test]
+    fn test_resolve_download_id_generates_when_missing() {
+        let id = resolve_download_id(None).unwrap();
+        assert!(Uuid::parse_str(&id).is_ok());
+    }
 
     #[test]
     fn test_inspect_url_empty() {
@@ -202,23 +410,12 @@ mod tests {
     }
 
     #[test]
-    fn test_inspect_url_movibox_detection() {
+    fn test_inspect_url_without_video_is_error() {
+        // `.invalid` ne se résout jamais (RFC 2606) : aucune métadonnée ne doit être inventée.
         tauri::async_runtime::block_on(async {
-            let result = inspect_url("https://movibox.net/watch/12345".to_string()).await;
-            assert!(result.is_ok());
-            let meta = result.unwrap();
-            assert_eq!(meta.source_platform, "MoviBox");
-            assert!(!meta.available_formats.is_empty());
-        });
-    }
-
-    #[test]
-    fn test_inspect_url_generic_stream() {
-        tauri::async_runtime::block_on(async {
-            let result = inspect_url("https://cdn.example.org/media/sample.mp4".to_string()).await;
-            assert!(result.is_ok());
-            let meta = result.unwrap();
-            assert_eq!(meta.source_platform, "Flux Web / Direct");
+            let result =
+                inspect_url("https://ktk-download.invalid/media/sample.mp4".to_string()).await;
+            assert!(result.is_err());
         });
     }
 
