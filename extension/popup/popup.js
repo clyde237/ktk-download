@@ -49,6 +49,72 @@ async function updateAppStatus() {
 /**
  * Affiche la liste des médias détectés.
  */
+// Préréglages reconnus par ktk-download (`best`, `1080p`, `720p`, `480p`, `audio_only`).
+const FORMAT_OPTIONS = [
+  { id: 'best', label: 'Meilleure qualité' },
+  { id: '1080p', label: '1080p (Full HD)' },
+  { id: '720p', label: '720p (HD)' },
+  { id: '480p', label: '480p (SD)' },
+  { id: 'audio_only', label: 'Audio MP3' }
+];
+
+/** Préréglage le plus proche de la résolution détectée sur la page. */
+function presetForResolution(resolution) {
+  if (!resolution) return 'best';
+  if (resolution.includes('1080')) return '1080p';
+  if (resolution.includes('720')) return '720p';
+  if (resolution.includes('480')) return '480p';
+  return 'best';
+}
+
+// Dossier choisi pour les envois ; chaîne vide : dossier par défaut de l'application.
+let selectedFolder = '';
+
+/** Affiche les deux derniers éléments d'un chemin, le chemin complet restant en info-bulle. */
+function shortFolderLabel(path) {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : path;
+}
+
+async function loadFolders() {
+  const bar = document.getElementById('folder-bar');
+  const select = document.getElementById('folder-select');
+  const res = await browserAPI.runtime.sendMessage({ type: 'GET_FOLDERS' });
+  if (!res || res.error) {
+    bar.hidden = true;
+    return;
+  }
+
+  const stored = await browserAPI.storage.local.get('outputDir');
+  const known = new Set(res.recent);
+  selectedFolder = stored.outputDir && known.has(stored.outputDir) ? stored.outputDir : '';
+
+  select.innerHTML = '';
+  const defaultOption = document.createElement('option');
+  defaultOption.value = '';
+  defaultOption.textContent = res.defaultFolder
+    ? `${shortFolderLabel(res.defaultFolder)} (par défaut)`
+    : 'Téléchargements (par défaut)';
+  defaultOption.title = res.defaultFolder || '';
+  select.appendChild(defaultOption);
+
+  for (const folder of res.recent) {
+    if (folder === res.defaultFolder) continue;
+    const option = document.createElement('option');
+    option.value = folder;
+    option.textContent = shortFolderLabel(folder);
+    option.title = folder;
+    select.appendChild(option);
+  }
+
+  select.value = selectedFolder;
+  select.addEventListener('change', () => {
+    selectedFolder = select.value;
+    void browserAPI.storage.local.set({ outputDir: selectedFolder });
+  });
+  bar.hidden = false;
+}
+
 function renderMediaList(mediaList) {
   currentMediaList = mediaList;
   const listEl = document.getElementById('media-list');
@@ -115,22 +181,9 @@ function renderMediaList(mediaList) {
     qualitySelect.className = 'quality-select';
     qualitySelect.title = 'Format / Qualité';
 
-    const formatOptions = [
-      { id: '1080p', label: '1080p (Full HD)' },
-      { id: '720p', label: '720p (HD)' },
-      { id: '480p', label: '480p (SD)' },
-      { id: 'mp3', label: 'Audio MP3' },
-      { id: 'best', label: 'Meilleure qualité' }
-    ];
+    const preselected = presetForResolution(media.resolution);
 
-    let preselected = 'best';
-    if (media.resolution) {
-      if (media.resolution.includes('1080')) preselected = '1080p';
-      else if (media.resolution.includes('720')) preselected = '720p';
-      else if (media.resolution.includes('480')) preselected = '480p';
-    }
-
-    formatOptions.forEach((opt) => {
+    FORMAT_OPTIONS.forEach((opt) => {
       const optEl = document.createElement('option');
       optEl.value = opt.id;
       optEl.textContent = opt.label;
@@ -162,7 +215,8 @@ function renderMediaList(mediaList) {
           payload: {
             url: targetUrl,
             title: media.title,
-            formatId: chosenFormat
+            formatId: chosenFormat,
+            outputDir: selectedFolder || undefined
           }
         });
         if (res && res.success) {
@@ -215,7 +269,7 @@ async function loadTabMedia() {
 
 document.addEventListener('DOMContentLoaded', async () => {
   await updateAppStatus();
-  await loadTabMedia();
+  await Promise.all([loadTabMedia(), loadFolders()]);
 
   // Bouton Tout Télécharger
   const btnDownloadAll = document.getElementById('btn-download-all');
@@ -234,7 +288,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         payload: {
           url: targetUrl,
           title: item.title,
-          formatId: item.resolution ? `${item.resolution}` : 'best'
+          formatId: presetForResolution(item.resolution),
+          outputDir: selectedFolder || undefined
         }
       });
     }

@@ -8,6 +8,7 @@ const browserAPI = globalThis.browser ?? globalThis.chrome;
 const KTK_SERVER_URL = 'http://127.0.0.1:42124';
 const PING_ENDPOINT = `${KTK_SERVER_URL}/ping`;
 const DOWNLOAD_ENDPOINT = `${KTK_SERVER_URL}/download`;
+const FOLDERS_ENDPOINT = `${KTK_SERVER_URL}/folders`;
 
 // Extensions et types MIME vidéo pris en charge pour l'interception réseau
 const VIDEO_EXTENSIONS = [
@@ -232,6 +233,26 @@ async function checkDesktopAppStatus() {
 }
 
 /**
+ * Récupère le dossier par défaut et les dossiers récents de l'application de bureau.
+ */
+async function fetchAppFolders() {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(FOLDERS_ENDPOINT, { signal: controller.signal });
+    clearTimeout(timeoutId);
+    if (!res.ok) return { error: `Réponse ${res.status}` };
+    const data = await res.json();
+    return {
+      defaultFolder: typeof data.default === 'string' ? data.default : null,
+      recent: Array.isArray(data.recent) ? data.recent.filter((f) => typeof f === 'string') : []
+    };
+  } catch (_err) {
+    return { error: 'Application injoignable' };
+  }
+}
+
+/**
  * Transmet un ordre de téléchargement au serveur local ktk-download.
  */
 async function sendDownloadToApp(payload) {
@@ -252,7 +273,8 @@ async function sendDownloadToApp(payload) {
       body: JSON.stringify({
         url: resolvedUrl,
         title: payload.title || undefined,
-        format_id: payload.formatId || undefined
+        format_id: payload.formatId || undefined,
+        output_dir: payload.outputDir || undefined
       }),
       signal: controller.signal
     });
@@ -331,6 +353,13 @@ browserAPI.runtime.onMessage.addListener((message, sender, sendResponse) => {
     (async () => {
       const result = await sendDownloadToApp(message.payload);
       sendResponse(result);
+    })();
+    return true;
+  }
+
+  if (message.type === 'GET_FOLDERS') {
+    (async () => {
+      sendResponse(await fetchAppFolders());
     })();
     return true;
   }

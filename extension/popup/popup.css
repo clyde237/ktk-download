@@ -109,6 +109,29 @@ body {
   max-height: 420px;
 }
 
+.folder-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.folder-bar[hidden] {
+  display: none;
+}
+
+.folder-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.folder-select {
+  flex: 1;
+  min-width: 0;
+}
+
 .action-bar {
   display: flex;
   align-items: center;
