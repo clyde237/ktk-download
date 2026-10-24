@@ -82,8 +82,8 @@ pub async fn inspect_url(url: String) -> Result<VideoMetadata, CommandError> {
 /// Valide rigoureusement l'URL avant de lancer le téléchargement avec `yt-dlp` ou le moteur
 /// de streaming asynchrone natif.
 #[tauri::command]
-pub async fn download_video(
-    app: AppHandle,
+pub async fn download_video<R: tauri::Runtime>(
+    app: AppHandle<R>,
     registry: State<'_, DownloadRegistry>,
     request: DownloadRequest,
 ) -> Result<DownloadResult, CommandError> {

@@ -38,7 +38,7 @@
 ## Phase 5 : Tests, Déploiement & Release
 
 - [x] Écrire des tests unitaires pour la logique Rust de téléchargement (interactions yt-dlp mockées) et des tests unitaires Svelte avec Vitest
-- [ ] Mettre en place des tests d'intégration pour les round-trips IPC Tauri (URL → téléchargement → progression → achèvement)
+- [x] Mettre en place des tests d'intégration pour les round-trips IPC Tauri (URL → téléchargement → progression → achèvement)
 - [ ] Configurer les pipelines de build Tauri pour toutes les cibles (.deb, .AppImage, .exe, .dmg) avec mise en place de code signing
 - [ ] Générer les assets de release et automatiser le bumping de version via `bumpp` ou équivalent
 - [ ] Rédiger la documentation utilisateur et contributeur, et valider les prérequis spécifiques à chaque plateforme pour la distribution
