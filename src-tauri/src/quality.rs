@@ -64,7 +64,9 @@ impl QualityPreset {
     /// Arguments de sélection de format pour yt-dlp.
     ///
     /// Sans ffmpeg (`can_merge` faux), yt-dlp ne peut pas fusionner audio et vidéo : seuls les
-    /// formats contenant déjà les deux flux sont demandés.
+    /// formats contenant déjà les deux flux sont demandés. Un préréglage plafonné retombe sur le
+    /// meilleur format disponible si aucun format ne respecte le plafond, notamment quand une
+    /// URL de playlist HLS directe ne fournit pas de hauteur exploitable.
     pub fn ytdlp_args(self, can_merge: bool) -> Vec<String> {
         let selector = match (self, self.max_height(), can_merge) {
             (Self::AudioMp3, _, _) => {
@@ -72,8 +74,8 @@ impl QualityPreset {
                     .map(String::from)
                     .to_vec();
             }
-            (_, Some(h), true) => format!("bv*[height<={h}]+ba/b[height<={h}]"),
-            (_, Some(h), false) => format!("b[height<={h}]"),
+            (_, Some(h), true) => format!("bv*[height<={h}]+ba/b[height<={h}]/best"),
+            (_, Some(h), false) => format!("b[height<={h}]/best"),
             // Sélection par défaut de yt-dlp : meilleure vidéo + meilleur audio
             (_, None, true) => return Vec::new(),
             (_, None, false) => "b".to_string(),
@@ -284,11 +286,11 @@ mod tests {
         assert_eq!(QualityPreset::Best.ytdlp_args(false), vec!["-f", "b"]);
         assert_eq!(
             QualityPreset::P720.ytdlp_args(true),
-            vec!["-f", "bv*[height<=720]+ba/b[height<=720]"]
+            vec!["-f", "bv*[height<=720]+ba/b[height<=720]/best"]
         );
         assert_eq!(
             QualityPreset::P720.ytdlp_args(false),
-            vec!["-f", "b[height<=720]"]
+            vec!["-f", "b[height<=720]/best"]
         );
         assert_eq!(
             QualityPreset::AudioMp3.ytdlp_args(true),
