@@ -60,6 +60,9 @@
 5. 🗂️ **Gestionnaire de destination** : Sélecteur de dossier natif OS et accès direct d'un clic au fichier téléchargé dans l'explorateur de fichiers.
 6. 📜 **Historique persistant** : Mémorisation des téléchargements passés avec re-téléchargement immédiat et nettoyage sélectif.
 7. 🛡️ **Sécurité & Assainissement** : Validation stricte des protocoles (HTTP/HTTPS uniquement), protection SSRF contre les adresses locales non autorisées et élimination des traceurs publicitaires d'URL.
+8. 🔄 **Mise à jour intégrée** : L'application vérifie les nouvelles versions publiées et permet de les installer depuis le bouton **Mettre à jour**, sans désinstallation préalable.
+
+Les mises à jour intégrées sont prises en charge pour les installations AppImage (Linux), NSIS (Windows) et `.app` (macOS). Sous Linux, les installations `.deb` continuent de se mettre à jour via le gestionnaire de paquets. Les publications doivent être créées avec un tag `vX.Y.Z` (ou lancées manuellement avec une version), afin que le workflow publie les bundles signés et `latest.json`.
 
 ---
 

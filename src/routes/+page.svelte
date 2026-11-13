@@ -7,6 +7,8 @@
   import { onMount, untrack } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event';
+  import { relaunch } from '@tauri-apps/plugin-process';
+  import { check, type Update } from '@tauri-apps/plugin-updater';
   import { destination } from '$lib/stores/destination.svelte';
   import { createDownloadNotifier } from '$lib/stores/download-notifications';
   import {
@@ -35,6 +37,10 @@
 
   let isAdding = $state(false);
   let downloadStartError = $state<string | null>(null);
+  let availableUpdate = $state<Update | null>(null);
+  let isCheckingUpdate = $state(false);
+  let isInstallingUpdate = $state(false);
+  let updateProgress = $state<number | null>(null);
 
   type Tab = 'active' | 'finished';
   let activeTab = $state<Tab>('active');
@@ -77,7 +83,69 @@
     void emit<EntryMessage>(ENTRY_EVENT, entry);
   }
 
+  async function checkForUpdates(showResult = false) {
+    if (isCheckingUpdate || isInstallingUpdate) return;
+    isCheckingUpdate = true;
+    try {
+      availableUpdate = await check();
+      if (availableUpdate && showResult) {
+        toasts.info({
+          title: `La version ${availableUpdate.version} est disponible`,
+          message: 'Installez-la sans désinstaller ktk-download.',
+          action: { label: 'Mettre à jour', onClick: installUpdate }
+        });
+      } else if (!availableUpdate && showResult) {
+        toasts.success({ title: 'ktk-download est à jour' });
+      }
+    } catch (err: unknown) {
+      console.warn('Vérification des mises à jour impossible :', err);
+      if (showResult) {
+        toasts.error({
+          title: 'Vérification des mises à jour impossible',
+          message: formatErrorMessage(err)
+        });
+      }
+    } finally {
+      isCheckingUpdate = false;
+    }
+  }
+
+  async function installUpdate() {
+    const update = availableUpdate;
+    if (!update || isInstallingUpdate) return;
+
+    isInstallingUpdate = true;
+    updateProgress = null;
+    let contentLength = 0;
+    let downloaded = 0;
+    try {
+      await update.downloadAndInstall((event) => {
+        if (event.event === 'Started') {
+          contentLength = event.data.contentLength ?? 0;
+        } else if (event.event === 'Progress') {
+          downloaded += event.data.chunkLength;
+          updateProgress =
+            contentLength > 0
+              ? Math.min(100, Math.round((downloaded / contentLength) * 100))
+              : null;
+        }
+      });
+      if (!navigator.userAgent.includes('Windows')) {
+        await relaunch();
+      }
+    } catch (err: unknown) {
+      isInstallingUpdate = false;
+      toasts.error({
+        title: 'Installation de la mise à jour impossible',
+        message: formatErrorMessage(err)
+      });
+    }
+  }
+
   onMount(() => {
+    if (!import.meta.env.DEV) {
+      void checkForUpdates();
+    }
     // Qualité et dossier ont été choisis dans l'extension : ajout direct à la file.
     const unlisteners: Promise<UnlistenFn>[] = [
       listen<ExtensionDownloadPayload>('extension-download', (event) => {
@@ -278,6 +346,23 @@
       <h1 class="wordmark">ktk-download</h1>
     </div>
     <p class="device-status" data-state={lampState}>{deviceStatus}</p>
+    <button
+      type="button"
+      class="update-btn"
+      onclick={() => (availableUpdate ? installUpdate() : checkForUpdates(true))}
+      disabled={isCheckingUpdate || isInstallingUpdate}
+      title={availableUpdate ? `Installer la version ${availableUpdate.version}` : undefined}
+    >
+      {#if isInstallingUpdate}
+        {updateProgress === null ? 'Installation…' : `Installation… ${updateProgress}%`}
+      {:else if isCheckingUpdate}
+        Vérification…
+      {:else if availableUpdate}
+        Mettre à jour · v{availableUpdate.version}
+      {:else}
+        Vérifier les mises à jour
+      {/if}
+    </button>
   </header>
 
   <main class="app-main">
@@ -614,6 +699,30 @@
     padding: var(--space-4) var(--space-6);
     background-color: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .update-btn {
+    flex-shrink: 0;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border-strong);
+    border-radius: var(--radius-md);
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out);
+  }
+
+  .update-btn:hover:not(:disabled) {
+    background-color: var(--color-surface-hover);
+    border-color: var(--color-accent-strong);
+  }
+
+  .update-btn:disabled {
+    cursor: wait;
+    opacity: 0.7;
   }
 
   .brand {
@@ -1215,6 +1324,12 @@
   @media (max-width: 640px) {
     .app-header {
       padding: var(--space-3) var(--space-4);
+      gap: var(--space-2);
+      flex-wrap: wrap;
+    }
+
+    .device-status {
+      margin-left: auto;
     }
 
     .app-main {

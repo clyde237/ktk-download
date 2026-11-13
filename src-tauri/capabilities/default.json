@@ -8,6 +8,8 @@
     "core:window:allow-close",
     "opener:default",
     "opener:allow-open-path",
-    "dialog:allow-open"
+    "dialog:allow-open",
+    "process:default",
+    "updater:default"
   ]
 }
