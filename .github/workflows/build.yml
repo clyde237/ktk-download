@@ -23,6 +23,8 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: write
+    outputs:
+      release_version: ${{ steps.release.outputs.version }}
     strategy:
       fail-fast: false
       matrix:
@@ -172,7 +174,7 @@ jobs:
       - name: Publish release after all platform builds succeed
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.release_version) }}
+          RELEASE_TAG: v${{ needs.build-tauri.outputs.release_version }}
         run: |
           mapfile -t RELEASE_IDS < <(
             gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
