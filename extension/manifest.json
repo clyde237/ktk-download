@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "ktk-download — Téléchargeur Vidéo",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Détection automatique et capture vidéo sur toutes les pages web via ktk-download (compatible Chrome, Edge, Firefox et Opera).",
   "icons": {
     "16": "icons/icon-16.png",
