@@ -174,5 +174,15 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.release_version) }}
         run: |
-          RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
+          mapfile -t RELEASE_IDS < <(
+            gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+              --jq ".[] | select(.tag_name == \"$RELEASE_TAG\") | .id"
+          )
+
+          if [[ "${#RELEASE_IDS[@]}" -ne 1 ]]; then
+            echo "Attendu une release pour le tag $RELEASE_TAG, trouvé ${#RELEASE_IDS[@]}." >&2
+            exit 1
+          fi
+
+          RELEASE_ID="${RELEASE_IDS[0]}"
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false
