@@ -298,7 +298,7 @@ Les versions récentes vérifient les mises à jour au démarrage. Le bouton **M
 - Les mises à jour intégrées sont disponibles pour les installations **AppImage** (Linux x86_64), **NSIS** (Windows x86_64) et **.app** (macOS Apple Silicon).
 - Les installations Linux **.deb** restent à mettre à jour avec le paquet de la nouvelle version, par exemple `sudo apt install ./ktk-download_<version>_amd64.deb`.
 - La toute première version qui active le mécanisme de mise à jour doit être installée manuellement ; les versions suivantes pourront se mettre à jour depuis l'application.
-- Pour publier une version, poussez un tag Git `vX.Y.Z` ou lancez manuellement le workflow **Multi-Platform Build & Packaging** avec cette version. Le workflow ne publie la release et son manifeste updater `latest.json` qu'après la réussite des builds de toutes les plateformes.
+- Une fusion dans `main` déclenche automatiquement le workflow multiplateforme. Il incrémente le numéro patch depuis la dernière release publiée. Vous pouvez aussi pousser un tag Git `vX.Y.Z` ou lancer le workflow manuellement avec une version. La release et le manifeste updater `latest.json` ne sont publiés qu'après la réussite des builds de toutes les plateformes.
 - La clé privée de signature updater doit rester sauvegardée et inchangée. Elle est conservée localement dans `~/.tauri/ktk-download-updater.key` et comme secret GitHub `TAURI_SIGNING_PRIVATE_KEY`. Ne la commitez jamais et ne la régénérez pas après publication.
 
 ---
