@@ -2,21 +2,20 @@ name: Multi-Platform Build & Packaging
 
 on:
   push:
-    tags:
-      - 'v*'
     branches:
       - main
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
-      create_release:
-        description: 'Publier automatiquement une release GitHub'
-        required: false
-        type: boolean
-        default: false
+      release_version:
+        description: 'Version semver à publier, sans le préfixe v (ex. 0.2.0)'
+        required: true
+        type: string
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build-tauri:
@@ -44,6 +43,55 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: release
+        env:
+          TAG_VERSION: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || inputs.release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${TAG_VERSION#v}"
+          if [[ -z "$VERSION" && "$GITHUB_REF" == "refs/heads/main" ]]; then
+            RELEASE_STATUS="$(curl -sS \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              -o "$RUNNER_TEMP/latest-release.json" \
+              -w "%{http_code}" \
+              "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/releases/latest")"
+
+            if [[ "$RELEASE_STATUS" == "200" ]]; then
+              LATEST_TAG="$(node -e "const release = require(process.argv[1]); process.stdout.write(release.tag_name || '')" "$RUNNER_TEMP/latest-release.json")"
+              LATEST_VERSION="${LATEST_TAG#v}"
+              VERSION="$(node - "$LATEST_VERSION" <<'NODE'
+          const match = process.argv[2].match(/^(\d+)\.(\d+)\.(\d+)$/);
+          if (!match) {
+            console.error(`Le dernier tag publié n'est pas une version semver stable : ${process.argv[2]}`);
+            process.exit(1);
+          }
+          console.log(`${match[1]}.${match[2]}.${Number(match[3]) + 1}`);
+          NODE
+          )"
+            elif [[ "$RELEASE_STATUS" == "404" ]]; then
+              VERSION="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            else
+              echo "Impossible de déterminer la dernière release GitHub (HTTP $RELEASE_STATUS)." >&2
+              exit 1
+            fi
+          fi
+
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "La version de release doit respecter le format semver X.Y.Z." >&2
+            exit 1
+          fi
+          node - "$VERSION" <<'NODE'
+          const fs = require('node:fs');
+          const path = 'src-tauri/tauri.conf.json';
+          const config = JSON.parse(fs.readFileSync(path, 'utf8'));
+          config.version = process.argv[2];
+          fs.writeFileSync(path, `${JSON.stringify(config, null, 2)}\n`);
+          NODE
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+        shell: bash
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -92,19 +140,14 @@ jobs:
           # Signature de code Windows (Authenticode SignTool)
           WINDOWS_CERTIFICATE: ${{ secrets.WINDOWS_CERTIFICATE }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
-          # Signature de code & Notarisation Apple macOS
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # La signature Apple du DMG est désactivée; seule la signature updater est requise.
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'ktk-download ${{ github.ref_name }}'
+          tagName: v${{ steps.release.outputs.version }}
+          releaseName: 'ktk-download v${{ steps.release.outputs.version }}'
           releaseBody: 'Consultez les notes de version pour les détails des nouveautés de ktk-download.'
           releaseDraft: true
           prerelease: false
+          updaterJsonPreferNsis: true
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
@@ -117,3 +160,19 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
+
+  publish-release:
+    name: Publish completed release
+    needs: build-tauri
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Publish release after all platform builds succeed
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v{0}', inputs.release_version) }}
+        run: |
+          RELEASE_ID="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq '.id')"
+          gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false

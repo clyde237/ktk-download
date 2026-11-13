@@ -291,6 +291,16 @@ chmod +x ktk-download_0.1.0_amd64.AppImage
 >   xattr -cr /Applications/ktk-download.app
 >   ```
 
+### 5.4 Mises à jour intégrées
+
+Les versions récentes vérifient les mises à jour au démarrage. Le bouton **Mettre à jour** apparaît dans l'en-tête lorsqu'une nouvelle version est publiée ; il télécharge et installe alors la mise à jour sans désinstallation manuelle. Le bouton permet aussi de relancer une vérification.
+
+- Les mises à jour intégrées sont disponibles pour les installations **AppImage** (Linux x86_64), **NSIS** (Windows x86_64) et **.app** (macOS Apple Silicon).
+- Les installations Linux **.deb** restent à mettre à jour avec le paquet de la nouvelle version, par exemple `sudo apt install ./ktk-download_<version>_amd64.deb`.
+- La toute première version qui active le mécanisme de mise à jour doit être installée manuellement ; les versions suivantes pourront se mettre à jour depuis l'application.
+- Une fusion dans `main` déclenche automatiquement le workflow multiplateforme. Il incrémente le numéro patch depuis la dernière release publiée. Vous pouvez aussi pousser un tag Git `vX.Y.Z` ou lancer le workflow manuellement avec une version. La release et le manifeste updater `latest.json` ne sont publiés qu'après la réussite des builds de toutes les plateformes.
+- La clé privée de signature updater doit rester sauvegardée et inchangée. Elle est conservée localement dans `~/.tauri/ktk-download-updater.key` et comme secret GitHub `TAURI_SIGNING_PRIVATE_KEY`. Ne la commitez jamais et ne la régénérez pas après publication.
+
 ---
 
 ## 6. Liaison avec l'extension de navigateur
