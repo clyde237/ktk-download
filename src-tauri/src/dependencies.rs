@@ -19,8 +19,7 @@ const YTDLP_WINDOWS_URL: &str =
 const YTDLP_UNIX_URL: &str = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp";
 
 #[allow(dead_code)]
-const FFMPEG_WINDOWS_URL: &str =
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+const FFMPEG_WINDOWS_URL: &str = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
 
 /// État global d'installation des dépendances tierces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -190,10 +189,7 @@ async fn download_file_with_progress(
                     percentage,
                     bytes_downloaded: downloaded,
                     total_bytes,
-                    message: format!(
-                        "Téléchargement de {} ({}%)...",
-                        component_name, percentage
-                    ),
+                    message: format!("Téléchargement de {} ({}%)...", component_name, percentage),
                 },
             )
             .ok();
@@ -258,7 +254,9 @@ fn extract_ffmpeg_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), Com
 
         if lower.ends_with("ffmpeg.exe") || lower.ends_with("ffprobe.exe") {
             let file_name = Path::new(&entry_name).file_name().ok_or_else(|| {
-                CommandError::ExtractionFailed("Nom de fichier invalide dans l'archive.".to_string())
+                CommandError::ExtractionFailed(
+                    "Nom de fichier invalide dans l'archive.".to_string(),
+                )
             })?;
 
             let dest_path = target_dir.join(file_name);
@@ -270,7 +268,10 @@ fn extract_ffmpeg_from_zip(zip_path: &Path, target_dir: &Path) -> Result<(), Com
             })?;
 
             io::copy(&mut entry, &mut out).map_err(|e| {
-                CommandError::Internal(format!("Échec de décompression vers {:?} : {}", dest_path, e))
+                CommandError::Internal(format!(
+                    "Échec de décompression vers {:?} : {}",
+                    dest_path, e
+                ))
             })?;
 
             extracted_count += 1;
@@ -422,4 +423,3 @@ mod tests {
         assert!(json.contains("\"component\":\"yt-dlp\""));
     }
 }
-

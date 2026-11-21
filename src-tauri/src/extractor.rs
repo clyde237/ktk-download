@@ -58,7 +58,11 @@ pub fn find_tool_binary(name: &str) -> Option<PathBuf> {
     }
 
     // 3. À côté de l'exécutable principal ou dans ses dossiers de ressources (installation NSIS / portable)
-    if let Some(parent) = std::env::current_exe().ok().as_deref().and_then(Path::parent) {
+    if let Some(parent) = std::env::current_exe()
+        .ok()
+        .as_deref()
+        .and_then(Path::parent)
+    {
         let candidates = [
             parent.join(&file_name),
             parent.join("bin").join(&file_name),
