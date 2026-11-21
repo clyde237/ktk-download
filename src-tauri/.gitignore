@@ -7,4 +7,6 @@
 /gen/schemas
 
 # Bundled external binaries
-/binaries/
+/binaries/*
+!/binaries/.gitkeep
+!/binaries/README.md
