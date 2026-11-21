@@ -18,52 +18,127 @@ use crate::quality::{self, QualityPreset};
 /// Fréquence maximale de vérification du jeton d'annulation pendant un téléchargement yt-dlp.
 const CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
-/// Localise le binaire `yt-dlp` sur le système hôte.
+/// Localise un outil binaire (ex. "yt-dlp", "ffmpeg", "ffprobe") sur le système hôte.
 ///
-/// Recherche dans l'ordre :
-/// 1. La variable d'environnement `YTDLP_PATH` si définie.
-/// 2. Le répertoire utilisateur `$HOME/.local/bin/yt-dlp`.
-/// 3. Les chemins système usuels (`/usr/local/bin/yt-dlp`, `/usr/bin/yt-dlp`).
-/// 4. Le binaire `yt-dlp` accessible dans le `PATH`.
-pub fn find_ytdlp_binary() -> Option<PathBuf> {
-    if let Ok(env_path) = std::env::var("YTDLP_PATH") {
+/// Recherche dans l'ordre de priorité :
+/// 1. La variable d'environnement explicite `{NAME}_PATH` (ex: `YTDLP_PATH`, `FFMPEG_PATH`).
+/// 2. Le dossier de données applicatives locales (`%LOCALAPPDATA%/ktk-download/bin/` sous Windows,
+///    `~/.local/share/ktk-download/bin/` sous Linux).
+/// 3. Le répertoire d'installation à côté de l'exécutable de l'application (`current_exe()?.parent()`)
+///    ou ses sous-dossiers `bin/`, `binaries/`, `resources/`, `resources/bin/`.
+/// 4. Le répertoire utilisateur personnel (`$HOME/.local/bin/`).
+/// 5. Les répertoires système usuels (Chocolatey, Scoop, WinGet sous Windows ; /usr/local/bin, /usr/bin, /opt/homebrew sous Unix).
+/// 6. Le `PATH` système avec gestion automatique de l'extension `.exe` sous Windows.
+pub fn find_tool_binary(name: &str) -> Option<PathBuf> {
+    let file_name = if cfg!(windows) {
+        if name.ends_with(".exe") {
+            name.to_string()
+        } else {
+            format!("{}.exe", name)
+        }
+    } else {
+        name.to_string()
+    };
+
+    // 1. Variable d'environnement spécifique (ex: YTDLP_PATH, FFMPEG_PATH)
+    let env_key = format!("{}_PATH", name.to_uppercase().replace('-', ""));
+    if let Ok(env_path) = std::env::var(&env_key) {
         let p = PathBuf::from(env_path);
-        if p.exists() {
+        if p.is_file() {
             return Some(p);
         }
     }
 
+    // 2. Dossier de données locales de l'application (%LOCALAPPDATA%\ktk-download\bin sous Windows)
+    if let Some(data_dir) = dirs::data_local_dir() {
+        let app_bin = data_dir.join("ktk-download").join("bin").join(&file_name);
+        if app_bin.is_file() {
+            return Some(app_bin);
+        }
+    }
+
+    // 3. À côté de l'exécutable principal ou dans ses dossiers de ressources (installation NSIS / portable)
+    if let Some(parent) = std::env::current_exe().ok().as_deref().and_then(Path::parent) {
+        let candidates = [
+            parent.join(&file_name),
+            parent.join("bin").join(&file_name),
+            parent.join("binaries").join(&file_name),
+            parent.join("resources").join(&file_name),
+            parent.join("resources").join("bin").join(&file_name),
+            parent.join("resources").join("binaries").join(&file_name),
+        ];
+        for candidate in candidates {
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    // 4. Dossier utilisateur ~/.local/bin/
     if let Some(home) = dirs::home_dir() {
-        let local_bin = home.join(".local/bin/yt-dlp");
-        if local_bin.exists() {
+        let local_bin = home.join(".local").join("bin").join(&file_name);
+        if local_bin.is_file() {
             return Some(local_bin);
         }
     }
 
-    let standard_paths = [
-        "/usr/local/bin/yt-dlp",
-        "/usr/bin/yt-dlp",
-        "/opt/homebrew/bin/yt-dlp",
-    ];
+    // 5. Chemins système usuels
+    let system_paths = if cfg!(windows) {
+        vec![
+            PathBuf::from(r"C:\ProgramData\chocolatey\bin").join(&file_name),
+            PathBuf::from(r"C:\ffmpeg\bin").join(&file_name),
+            PathBuf::from(r"C:\yt-dlp").join(&file_name),
+        ]
+    } else {
+        vec![
+            PathBuf::from("/usr/local/bin").join(&file_name),
+            PathBuf::from("/usr/bin").join(&file_name),
+            PathBuf::from("/opt/homebrew/bin").join(&file_name),
+        ]
+    };
 
-    for path_str in standard_paths {
-        let p = PathBuf::from(path_str);
-        if p.exists() {
-            return Some(p);
+    for path in system_paths {
+        if path.is_file() {
+            return Some(path);
         }
     }
 
-    // Vérification de la disponibilité dans le PATH système
-    if let Ok(path_var) = std::env::var("PATH") {
+    // 6. Gestionnaires de paquets Windows (Scoop, WinGet)
+    if cfg!(windows) {
+        if let Some(home) = dirs::home_dir() {
+            let scoop_bin = home.join("scoop").join("shims").join(&file_name);
+            if scoop_bin.is_file() {
+                return Some(scoop_bin);
+            }
+        }
+        if let Some(local_app_data) = dirs::data_local_dir() {
+            let winget_bin = local_app_data
+                .join("Microsoft")
+                .join("WinGet")
+                .join("Links")
+                .join(&file_name);
+            if winget_bin.is_file() {
+                return Some(winget_bin);
+            }
+        }
+    }
+
+    // 7. Recherche dans le PATH système
+    if let Some(path_var) = std::env::var_os("PATH") {
         for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join("yt-dlp");
-            if candidate.exists() {
+            let candidate = dir.join(&file_name);
+            if candidate.is_file() {
                 return Some(candidate);
             }
         }
     }
 
     None
+}
+
+/// Localise le binaire `yt-dlp` sur le système hôte.
+pub fn find_ytdlp_binary() -> Option<PathBuf> {
+    find_tool_binary("yt-dlp")
 }
 
 /// Extrait les métadonnées d'une vidéo avec `yt-dlp`, puis par analyse directe de la page
@@ -640,15 +715,8 @@ fn ytdlp_failure_error(stderr_tail: &str, requires_single_file: bool) -> Command
 }
 
 /// Localise `ffmpeg`, nécessaire à yt-dlp pour fusionner audio et vidéo ou convertir en MP3.
-fn find_ffmpeg_binary() -> Option<PathBuf> {
-    find_executable(
-        "ffmpeg",
-        &[
-            PathBuf::from("/usr/local/bin/ffmpeg"),
-            PathBuf::from("/usr/bin/ffmpeg"),
-            PathBuf::from("/opt/homebrew/bin/ffmpeg"),
-        ],
-    )
+pub fn find_ffmpeg_binary() -> Option<PathBuf> {
+    find_tool_binary("ffmpeg")
 }
 
 /// Localise un runtime JavaScript pour le solveur de défis YouTube de yt-dlp (EJS).
@@ -951,6 +1019,25 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&fake_bin);
+    }
+
+    #[test]
+    fn test_find_tool_binary_with_env_var() {
+        let temp_dir = std::env::temp_dir();
+        let fake_tool = temp_dir.join("test-fake-tool");
+        let _ = std::fs::write(&fake_tool, "echo fake");
+
+        // SAFETY: Test unique manipulant une variable de test dédiée
+        unsafe {
+            std::env::set_var("TESTFAKETOOL_PATH", fake_tool.to_str().unwrap());
+        }
+
+        assert_eq!(find_tool_binary("testfaketool"), Some(fake_tool.clone()));
+
+        unsafe {
+            std::env::remove_var("TESTFAKETOOL_PATH");
+        }
+        let _ = std::fs::remove_file(&fake_tool);
     }
 
     #[test]

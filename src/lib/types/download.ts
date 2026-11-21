@@ -99,3 +99,28 @@ export interface ValidatedUrlPayload {
   domain: string;
   platform: string;
 }
+
+/**
+ * État d'installation des dépendances tierces (yt-dlp et ffmpeg).
+ */
+export interface DependencyStatus {
+  ytdlp_installed: boolean;
+  ytdlp_path: string | null;
+  ytdlp_version: string | null;
+  ffmpeg_installed: boolean;
+  ffmpeg_path: string | null;
+  local_bin_dir: string;
+  is_installing: boolean;
+}
+
+/**
+ * Progression de l'installation ou mise à jour d'un composant tiers.
+ */
+export interface DependencyProgressPayload {
+  component: string;
+  stage: 'starting' | 'downloading' | 'extracting' | 'ready' | 'error';
+  percentage: number;
+  bytes_downloaded: number;
+  total_bytes?: number;
+  message: string;
+}

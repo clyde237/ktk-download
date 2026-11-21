@@ -1,4 +1,5 @@
 pub mod commands;
+pub mod dependencies;
 pub mod downloader;
 pub mod error;
 pub mod extractor;
@@ -8,8 +9,9 @@ pub mod server;
 pub mod validator;
 
 use commands::{
-    cancel_download, download_video, inspect_url, open_download_window, pause_download,
-    set_recent_folders, validate_url,
+    cancel_download, check_system_dependencies, download_video, inspect_url,
+    install_system_dependencies, open_download_window, pause_download, set_recent_folders,
+    validate_url,
 };
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
@@ -39,7 +41,9 @@ pub fn run() {
             cancel_download,
             pause_download,
             open_download_window,
-            set_recent_folders
+            set_recent_folders,
+            check_system_dependencies,
+            install_system_dependencies
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

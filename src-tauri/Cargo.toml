@@ -34,6 +34,7 @@ dirs = "7"
 regex = "1.10"
 log = "0.4"
 tauri-plugin-dialog = "2"
+zip = { version = "9.8.1", default-features = false, features = ["deflate"] }
 
 [dev-dependencies]
 tauri = { version = "2", features = ["test"] }

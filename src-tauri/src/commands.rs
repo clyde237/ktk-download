@@ -307,6 +307,20 @@ fn resolve_download_id(requested: Option<&str>) -> Result<String, CommandError> 
     }
 }
 
+/// Commande IPC : Vérifie la disponibilité et l'état des dépendances système (`yt-dlp` et `ffmpeg`).
+#[tauri::command]
+pub fn check_system_dependencies() -> Result<crate::dependencies::DependencyStatus, CommandError> {
+    Ok(crate::dependencies::check_dependencies())
+}
+
+/// Commande IPC : Télécharge et configure automatiquement les dépendances requises (`yt-dlp` et `ffmpeg`).
+#[tauri::command]
+pub async fn install_system_dependencies(
+    app: AppHandle,
+) -> Result<crate::dependencies::DependencyStatus, CommandError> {
+    crate::dependencies::install_dependencies(app).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
