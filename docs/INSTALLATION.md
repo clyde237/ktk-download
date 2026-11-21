@@ -47,12 +47,25 @@ Ce guide détaille l'intégralité des procédures d'installation, de compilatio
 
 ## 2. Outils auxiliaires indispensables
 
-Pour extraire et convertir les flux vidéo de haute qualité (notamment 1080p, 4K et conversion audio MP3), l'application s'appuie sur deux utilitaires majeurs :
+Pour extraire et convertir les flux vidéo de haute qualité (notamment 1080p, 4K et conversion audio MP3), l'application s'appuie sur deux utilitaires majeurs : **`yt-dlp`** et **`ffmpeg`**.
 
-### 2.1 ffmpeg (Recommandé pour les flux séparés et le MP3)
+> [!IMPORTANT]
+> **Zéro configuration requise sur Windows & Debian/Ubuntu :**
+>
+> - **Sous Windows** : L'installateur NSIS officiel **embarque déjà `yt-dlp.exe`, `ffmpeg.exe` et `ffprobe.exe`** dans les ressources de l'application. Aucune installation manuelle n'est requise.
+> - **Sous Linux (.deb)** : Le paquet Debian déclare `ffmpeg` et `yt-dlp` dans ses dépendances officielles. L'installation via `sudo apt install ./ktk-download_...deb` les installe automatiquement.
+> - **Assistant de composants intégré (In-App)** : En cas d'absence ou d'environnement personnalisé (AppImage autonome, etc.), l'application intègre un **gestionnaire de composants automatisé** (accessible via le bouton **Composants** dans l'en-tête ou sur l'écran d'alerte) capable de télécharger et installer en un clic les versions officielles directement dans votre profil utilisateur local (`%LOCALAPPDATA%/ktk-download/bin` sous Windows ou `~/.local/share/ktk-download/bin` sous Linux).
+
+### 2.1 ffmpeg (Fusion des flux séparés & conversion MP3)
 
 Sur la plupart des plateformes vidéo (YouTube en particulier), les pistes vidéo haute résolution et audio sont diffusées séparément pour économiser la bande passante. `ffmpeg` est utilisé en tâche de fond pour fusionner ces flux sans perte de qualité.
 
+- **Windows (si non embarqué ou pour mise à niveau manuelle)** :
+  ```powershell
+  winget install Gyan.FFmpeg
+  # ou via Chocolatey
+  choco install ffmpeg
+  ```
 - **Linux (Debian/Ubuntu)** :
   ```bash
   sudo apt install -y ffmpeg
@@ -61,36 +74,38 @@ Sur la plupart des plateformes vidéo (YouTube en particulier), les pistes vidé
   ```bash
   brew install ffmpeg
   ```
-- **Windows (via winget ou Chocolatey)** :
-  ```powershell
-  winget install Gyan.FFmpeg
-  # ou via Chocolatey
-  choco install ffmpeg
-  ```
 
 ### 2.2 yt-dlp & solveur EJS pour YouTube
 
-L'application intègre un moteur de recherche automatique pour localiser `yt-dlp` : elle vérifie d'abord la variable d'environnement `YTDLP_PATH`, puis le dossier utilisateur `~/.local/bin`, les chemins système standards (`/usr/local/bin`, `/usr/bin`) et enfin le `PATH` système.
+L'application intègre un moteur de recherche multi-niveaux pour localiser `yt-dlp` :
 
-Pour garantir l'extraction des signatures déchiffrées de YouTube, installez le paquet complet comprenant le solveur EJS :
+1. Variable d'environnement `YTDLP_PATH`.
+2. Répertoire d'auto-provisioning de l'application (`%LOCALAPPDATA%/ktk-download/bin` ou `~/.local/share/ktk-download/bin`).
+3. Dossier de l'exécutable et ses sous-dossiers `bin/`, `binaries/` et `resources/` (fichiers embarqués avec l'application).
+4. Dossier utilisateur `~/.local/bin`.
+5. Chemins d'installation courants (`%LOCALAPPDATA%\Programs\yt-dlp`, Scoop, Chocolatey, WinGet, `/usr/local/bin`, `/usr/bin`).
+6. Le `PATH` système global.
 
-- **Installation universelle via pip / pipx** :
+Si vous souhaitez installer ou mettre à jour manuellement `yt-dlp` :
+
+- **Windows** :
+  ```powershell
+  winget install yt-dlp.yt-dlp
+  ```
+- **Linux (via pipx / pip)** :
   ```bash
-  pip install --user "yt-dlp[default]"
   # Sur Ubuntu 23.04+ / Debian 12 (avec PEP 668) :
   pipx install "yt-dlp[default]"
+  # ou universel :
+  pip install --user "yt-dlp[default]"
   ```
 - **macOS** :
   ```bash
   brew install yt-dlp
   ```
-- **Windows** :
-  ```powershell
-  winget install yt-dlp.yt-dlp
-  ```
 
 > [!NOTE]
-> Un runtime JavaScript (`node`, `deno` ou `bun`) est automatiquement détecté par ktk-download et transmis à `yt-dlp` pour résoudre les algorithmes de validation vidéo complexes.
+> Un runtime JavaScript (`node`, `deno` ou `bun`) est automatiquement détecté par ktk-download et transmis à `yt-dlp` pour résoudre les algorithmes de validation vidéo complexes de YouTube.
 
 ---
 
@@ -210,7 +225,14 @@ Les fichiers générés se trouveront dans :
 
 #### B. Compilation sous Windows
 
-Génère l'installateur NSIS exécutable (`.exe`) :
+Pour préparer les binaires embarqués (`yt-dlp.exe`, `ffmpeg.exe`, `ffprobe.exe`) avant la création de l'installateur, lancez le script de téléchargement automatique :
+
+```powershell
+# Télécharger les binaires Windows officiels dans src-tauri/binaries/
+npm run prepare:binaries
+```
+
+Puis générez l'installateur NSIS exécutable (`.exe`) :
 
 ```powershell
 npm run tauri build -- --bundles nsis
@@ -219,6 +241,9 @@ npm run tauri build -- --bundles nsis
 L'artefact produit se situe dans :
 
 - `src-tauri/target/release/bundle/nsis/ktk-download_<version>_x64-setup.exe`
+
+> [!NOTE]
+> Le pipeline CI GitHub Actions exécute automatiquement l'étape `npm run prepare:binaries` avant l'étape de packaging Tauri. Les exécutables `yt-dlp.exe` et `ffmpeg.exe` sont ainsi garantis présents dans l'installateur généré.
 
 #### C. Compilation sous macOS
 
@@ -249,7 +274,7 @@ sudo apt install ./ktk-download_0.1.0_amd64.deb
 ```
 
 > [!TIP]
-> L'utilisation de `apt install ./<fichier>.deb` au lieu de `dpkg -i` permet de résoudre et d'installer automatiquement toutes les dépendances requises (`libwebkit2gtk`, `libayatana-appindicator3`, etc.).
+> L'utilisation de `apt install ./<fichier>.deb` au lieu de `dpkg -i` permet de résoudre et d'installer automatiquement toutes les dépendances requises, y compris **`ffmpeg`** et **`yt-dlp`**, ainsi que les bibliothèques d'affichage (`libwebkit2gtk`, `libayatana-appindicator3`, etc.).
 
 Pour désinstaller ultérieurement :
 
@@ -269,12 +294,16 @@ chmod +x ktk-download_0.1.0_amd64.AppImage
 ./ktk-download_0.1.0_amd64.AppImage
 ```
 
+> [!NOTE]
+> Si `ffmpeg` ou `yt-dlp` ne sont pas encore installés sur votre système hôte, l'application vous proposera au démarrage (ou via le bouton **Composants** dans la barre supérieure) de les installer automatiquement dans votre espace utilisateur local (`~/.local/share/ktk-download/bin`).
+
 ### 5.2 Windows (Installeur .exe NSIS)
 
 1. Double-cliquez sur `ktk-download_0.1.0_x64-setup.exe`.
 2. L'installateur configure automatiquement l'application dans l'espace utilisateur local (`%LOCALAPPDATA%\Programs\ktk-download`) : aucune élévation de privilèges administrateur (UAC) n'est requise.
-3. Un raccourci est automatiquement créé sur votre bureau et dans votre menu Démarrer.
-4. L'application peut être désinstallée proprement à tout moment via **Paramètres Windows > Applications installées**.
+3. **Composants multimédias inclus** : `yt-dlp.exe`, `ffmpeg.exe` et `ffprobe.exe` sont directement inclus dans l'installation. Vous pouvez coller un lien YouTube dès le premier démarrage sans configuration supplémentaire.
+4. Un raccourci est automatiquement créé sur votre bureau et dans votre menu Démarrer.
+5. L'application peut être désinstallée proprement à tout moment via **Paramètres Windows > Applications installées**.
 
 ### 5.3 macOS (Image disque .dmg)
 

@@ -132,6 +132,10 @@ jobs:
       - name: Build frontend
         run: npm run build
 
+      - name: Prepare Windows Binaries (yt-dlp & ffmpeg)
+        if: runner.os == 'Windows'
+        run: npm run prepare:binaries
+
       - name: Build and Package with Tauri Action
         uses: tauri-apps/tauri-action@v0
         env:

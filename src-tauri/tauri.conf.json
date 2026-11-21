@@ -28,6 +28,7 @@
     "active": true,
     "createUpdaterArtifacts": true,
     "targets": ["deb", "appimage", "nsis", "dmg"],
+    "resources": ["binaries/*"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -45,7 +46,9 @@
         "depends": [
           "libwebkit2gtk-4.1-0 | libwebkit2gtk-4.0-37",
           "libgtk-3-0",
-          "libayatana-appindicator3-1"
+          "libayatana-appindicator3-1",
+          "ffmpeg",
+          "yt-dlp"
         ],
         "section": "utils",
         "priority": "optional"

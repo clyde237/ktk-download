@@ -1,5 +1,6 @@
 <script lang="ts">
   import DestinationPicker from '$lib/components/DestinationPicker.svelte';
+  import DependencyInstallerModal from '$lib/components/DependencyInstallerModal.svelte';
   import DownloadHistory from '$lib/components/DownloadHistory.svelte';
   import DownloadRow from '$lib/components/DownloadRow.svelte';
   import QualitySelector from '$lib/components/QualitySelector.svelte';
@@ -41,6 +42,19 @@
   let isCheckingUpdate = $state(false);
   let isInstallingUpdate = $state(false);
   let updateProgress = $state<number | null>(null);
+
+  let showDependencyModal = $state(false);
+
+  function handleDependenciesInstalled() {
+    showDependencyModal = false;
+    toasts.success({
+      title: 'Composants prêts',
+      message: 'yt-dlp et FFmpeg ont été configurés avec succès.'
+    });
+    if (currentError) {
+      currentError = null;
+    }
+  }
 
   type Tab = 'active' | 'finished';
   let activeTab = $state<Tab>('active');
@@ -346,23 +360,51 @@
       <h1 class="wordmark">ktk-download</h1>
     </div>
     <p class="device-status" data-state={lampState}>{deviceStatus}</p>
-    <button
-      type="button"
-      class="update-btn"
-      onclick={() => (availableUpdate ? installUpdate() : checkForUpdates(true))}
-      disabled={isCheckingUpdate || isInstallingUpdate}
-      title={availableUpdate ? `Installer la version ${availableUpdate.version}` : undefined}
-    >
-      {#if isInstallingUpdate}
-        {updateProgress === null ? 'Installation…' : `Installation… ${updateProgress}%`}
-      {:else if isCheckingUpdate}
-        Vérification…
-      {:else if availableUpdate}
-        Mettre à jour · v{availableUpdate.version}
-      {:else}
-        Vérifier les mises à jour
-      {/if}
-    </button>
+    <div class="header-actions">
+      <button
+        type="button"
+        class="dep-btn"
+        onclick={() => (showDependencyModal = true)}
+        title="Vérifier ou installer les composants système (yt-dlp et FFmpeg)"
+      >
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path
+            d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"
+          />
+          <polyline points="3.27 6.96 12 12.01 20.73 6.96" />
+          <line x1="12" y1="22.08" x2="12" y2="12" />
+        </svg>
+        <span>Outils</span>
+      </button>
+
+      <button
+        type="button"
+        class="update-btn"
+        onclick={() => (availableUpdate ? installUpdate() : checkForUpdates(true))}
+        disabled={isCheckingUpdate || isInstallingUpdate}
+        title={availableUpdate ? `Installer la version ${availableUpdate.version}` : undefined}
+      >
+        {#if isInstallingUpdate}
+          {updateProgress === null ? 'Installation…' : `Installation… ${updateProgress}%`}
+        {:else if isCheckingUpdate}
+          Vérification…
+        {:else if availableUpdate}
+          Mettre à jour · v{availableUpdate.version}
+        {:else}
+          Vérifier les mises à jour
+        {/if}
+      </button>
+    </div>
   </header>
 
   <main class="app-main">
@@ -535,6 +577,35 @@
             <span class="advice-text">{errorAdvice}</span>
           </div>
         {/if}
+
+        {#if currentError.message.toLowerCase().includes('yt-dlp') || currentError.message
+            .toLowerCase()
+            .includes('ffmpeg')}
+          <div class="error-action-row">
+            <button
+              type="button"
+              class="error-install-btn"
+              onclick={() => (showDependencyModal = true)}
+            >
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2.2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+              <span>Installer automatiquement yt-dlp & FFmpeg</span>
+            </button>
+          </div>
+        {/if}
       </section>
     {:else if downloads.ordered.length === 0 && history.entries.length === 0}
       <section class="panel sources" aria-labelledby="sources-heading">
@@ -681,6 +752,13 @@
       </section>
     {/if}
   </main>
+
+  <DependencyInstallerModal
+    isOpen={showDependencyModal}
+    onClose={() => (showDependencyModal = false)}
+    onSuccess={handleDependenciesInstalled}
+    reason={currentError?.message?.includes('yt-dlp') ? 'Téléchargement YouTube & Web' : null}
+  />
 </div>
 
 <style>
@@ -699,6 +777,35 @@
     padding: var(--space-4) var(--space-6);
     background-color: var(--color-surface);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-shrink: 0;
+  }
+
+  .dep-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background-color: var(--color-surface);
+    color: var(--color-text);
+    font-size: var(--text-xs);
+    font-weight: 650;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      border-color var(--duration-fast) var(--ease-out);
+  }
+
+  .dep-btn:hover {
+    background-color: var(--color-surface-hover);
+    border-color: var(--color-accent-strong);
   }
 
   .update-btn {
@@ -1253,6 +1360,37 @@
 
   .advice-text {
     flex: 1;
+  }
+
+  .error-action-row {
+    margin-top: var(--space-3);
+    display: flex;
+    justify-content: flex-start;
+  }
+
+  .error-install-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background-color: var(--color-accent);
+    color: var(--color-on-accent);
+    border: none;
+    border-radius: var(--radius-md);
+    padding: var(--space-2) var(--space-4);
+    font-size: var(--text-sm);
+    font-weight: 700;
+    cursor: pointer;
+    transition:
+      background-color var(--duration-fast) var(--ease-out),
+      transform 0.05s ease;
+  }
+
+  .error-install-btn:hover {
+    background-color: var(--color-accent-strong);
+  }
+
+  .error-install-btn:active {
+    transform: scale(0.98);
   }
 
   @keyframes shimmer {

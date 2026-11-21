@@ -61,6 +61,7 @@
 6. 📜 **Historique persistant** : Mémorisation des téléchargements passés avec re-téléchargement immédiat et nettoyage sélectif.
 7. 🛡️ **Sécurité & Assainissement** : Validation stricte des protocoles (HTTP/HTTPS uniquement), protection SSRF contre les adresses locales non autorisées et élimination des traceurs publicitaires d'URL.
 8. 🔄 **Mise à jour intégrée** : L'application vérifie les nouvelles versions publiées et permet de les installer depuis le bouton **Mettre à jour**, sans désinstallation préalable.
+9. 📦 **Zéro configuration & Auto-provisioning** : `yt-dlp.exe` et `ffmpeg.exe` sont directement embarqués dans l'installateur Windows. Le paquet Debian (`.deb`) les installe via APT. En cas de besoin, un assistant in-app interactif télécharge et installe les composants officiels en un clic.
 
 Les mises à jour intégrées sont prises en charge pour les installations AppImage (Linux), NSIS (Windows) et `.app` (macOS). Sous Linux, les installations `.deb` continuent de se mettre à jour via le gestionnaire de paquets. Une fusion dans `main` déclenche le workflow multiplateforme et incrémente le numéro patch depuis la dernière release publiée. Il est également possible de publier un tag `vX.Y.Z` ou de lancer le workflow manuellement avec une version.
 
@@ -113,6 +114,7 @@ ktk-download/
 ├── src-tauri/                    # Backend natif Rust (Tauri v2)
 │   ├── src/
 │   │   ├── commands.rs           # Commandes IPC exposées au frontend
+│   │   ├── dependencies.rs       # Détection & téléchargement automatique in-app (yt-dlp & ffmpeg)
 │   │   ├── downloader.rs         # Moteur de téléchargement asynchrone & streaming
 │   │   ├── extractor.rs          # Interfaçage avec yt-dlp et analyse des métadonnées
 │   │   ├── models.rs             # Structures de données partagées
@@ -122,6 +124,8 @@ ktk-download/
 │   ├── tests/                    # Tests d'intégration IPC Tauri
 │   ├── Cargo.toml                # Dépendances système Rust
 │   └── tauri.conf.json           # Configuration globale Tauri (cibles, bundles, etc.)
+├── scripts/                      # Scripts d'automatisation (téléchargement binaires Windows)
+│   └── download-binaries.mjs     # Préparation des binaires embarqués yt-dlp & ffmpeg
 └── package.json                  # Dépendances Node.js et scripts npm
 ```
 
@@ -134,14 +138,25 @@ ktk-download/
 - **Node.js** : v18 ou v20+ (LTS recommandé)
 - **Rust & Cargo** : version stable (v1.78+) via [rustup.rs](https://rustup.rs/)
 
-### 2. Outils multimédias (Recommandés)
+### 2. Outils multimédias (yt-dlp & ffmpeg)
+
+> [!NOTE]
+> **Embarqué sous Windows & Automatisé sous Linux** :
+>
+> - **Windows** : `yt-dlp.exe`, `ffmpeg.exe` et `ffprobe.exe` sont **déjà inclus dans l'installateur NSIS** — aucune installation manuelle n'est requise.
+> - **Linux (.deb)** : APT résout et installe automatiquement `ffmpeg` et `yt-dlp`.
+> - **In-App Assistant** : L'application intègre un assistant interactif pour installer automatiquement les outils manquants dans votre profil local.
+
+Pour une installation ou mise à jour manuelle système :
 
 - **ffmpeg** : Requis pour fusionner la vidéo et l'audio séparés (flux 1080p/4K) et convertir en MP3.
   - Linux : `sudo apt install ffmpeg`
   - macOS : `brew install ffmpeg`
   - Windows : `winget install Gyan.FFmpeg`
 - **yt-dlp** : Moteur d'extraction des métadonnées vidéo.
-  - Recommandé : `pip install --user "yt-dlp[default]"` (installe également le solveur JavaScript EJS pour YouTube).
+  - Linux : `pipx install "yt-dlp[default]"` ou `sudo apt install yt-dlp`
+  - macOS : `brew install yt-dlp`
+  - Windows : `winget install yt-dlp.yt-dlp`
 
 ---
 
@@ -216,6 +231,7 @@ _L'image `.dmg` est générée dans `src-tauri/target/release/bundle/dmg/ktk-dow
   ```bash
   sudo apt install ./ktk-download_0.1.0_amd64.deb
   ```
+  _APT installe automatiquement l'ensemble des dépendances (y compris `ffmpeg` et `yt-dlp`)._
 - **AppImage autonome** :
   ```bash
   chmod +x ktk-download_0.1.0_amd64.AppImage
@@ -226,6 +242,7 @@ _L'image `.dmg` est générée dans `src-tauri/target/release/bundle/dmg/ktk-dow
 
 - Double-cliquez sur `ktk-download_0.1.0_x64-setup.exe`.
 - L'installation s'effectue dans l'espace utilisateur local (aucun privilège administrateur forcé).
+- **Prêt à l'emploi** : `yt-dlp.exe` et `ffmpeg.exe` sont intégrés, aucun logiciel tiers n'est nécessaire.
 - Les raccourcis sont automatiquement créés dans le menu Démarrer et sur le bureau.
 
 ### Installation sous macOS
